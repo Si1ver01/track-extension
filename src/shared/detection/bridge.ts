@@ -8,7 +8,7 @@ export function createBridgeMessage(eventType: string, tabId: number, path: stri
   return { type: 'listener-record', record: normalizeRecord({ eventType, tabId, frameId: 0, browser: 'unknown', source: { target: 'window', path } }) };
 }
 
-export function installListenerHook(tabId: number): () => void {
+export function installListenerHook(tabId = 0): () => void {
   const original = EventTarget.prototype.addEventListener;
   EventTarget.prototype.addEventListener = function (type, listener, options) {
     const message = createBridgeMessage(String(type), tabId, this instanceof Element ? this.tagName.toLowerCase() : 'window');
