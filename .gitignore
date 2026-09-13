@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+
+# WXT and build output
+.wxt/
+.output/
+dist/
+build/
+
+# Test and coverage output
+coverage/
+playwright-report/
+test-results/
+
+# Local tooling caches
+.corepack/
+.cache/
+.eslintcache
+.vite/
+
+# Environment and local secrets
+.env
+.env.*
+!.env.example
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
