@@ -1,5 +1,5 @@
-import { normalizeRecord } from '../shared/records/normalize';
-import type { ListenerMessage } from '../shared/contracts/records';
+import { normalizeRecord } from '../records/normalize';
+import type { ListenerMessage } from '../contracts/records';
 
 const supported = new Set(['click', 'copy', 'cut', 'paste', 'input']);
 

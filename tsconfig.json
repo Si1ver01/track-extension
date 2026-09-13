@@ -1,4 +1,12 @@
 {
-  "extends": "./.wxt/tsconfig.json",
-  "compilerOptions": { "strict": true, "noEmit": true }
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM"],
+    "types": ["wxt/client"]
+  },
+  "include": ["src", "tests", "wxt.config.ts", "vitest.config.ts"]
 }
