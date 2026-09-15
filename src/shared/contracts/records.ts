@@ -26,6 +26,17 @@ export interface ListenerMessage {
   tabId?: number;
 }
 
+export interface BridgeHandshake {
+  source: 'listener-lens';
+  type: 'install-bridge';
+  nonce: string;
+}
+
+export interface BridgeRecordMessage extends ListenerMessage {
+  source: 'listener-lens';
+  nonce: string;
+}
+
 export function isListenerMessage(value: unknown): value is ListenerMessage {
   if (!value || typeof value !== 'object') return false;
   const message = value as Partial<ListenerMessage>;
