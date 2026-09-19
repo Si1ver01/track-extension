@@ -17,7 +17,7 @@
 
 ```bash
 pnpm install
-pnpm dev
+pnpm exec wxt
 ```
 
 ## Usage
