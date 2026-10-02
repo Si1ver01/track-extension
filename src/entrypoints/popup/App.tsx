@@ -13,7 +13,7 @@ export function App() {
     void (async () => {
       try {
         const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
-        if (tab.id === undefined) throw new Error('active tab has no id');
+        if (!tab || tab.id === undefined) throw new Error('active tab has no id');
         const nextState = await browser.runtime.sendMessage({ type: 'get-tab-state', tabId: tab.id }) as TabState | undefined;
         if (!nextState) throw new Error('background returned no tab state');
         if (active) setState(nextState);

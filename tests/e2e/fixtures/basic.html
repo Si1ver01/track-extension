@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Listener Lens fixture</title>
+  </head>
+  <body>
+    <button id="copy" type="button">Copy fixture</button>
+    <script>
+      window.addEventListener("click", () => undefined);
+      document.addEventListener("copy", () => undefined);
+      document
+        .querySelector("#copy")
+        .addEventListener("input", () => undefined);
+      document.body.dataset.fixtureReady = "true";
+    </script>
+  </body>
+</html>

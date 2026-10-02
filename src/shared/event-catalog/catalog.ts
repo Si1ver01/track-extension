@@ -8,5 +8,5 @@ const descriptions: Record<string, string> = {
 };
 
 export function describeEvent(eventType: string): string {
-  return descriptions[eventType] ?? descriptions.unknown;
+  return descriptions[eventType] ?? descriptions.unknown!;
 }

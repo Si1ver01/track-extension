@@ -2,25 +2,44 @@
   "name": "listener-lens",
   "private": true,
   "version": "0.1.0",
+  "type": "module",
   "packageManager": "pnpm@9.15.0",
   "scripts": {
-    "build": "wxt build",
-    "dev": "wxt",
-    "test": "vitest run",
+    "build": "pnpm run build:chrome && pnpm run build:firefox && pnpm run verify:build",
+    "build:chrome": "wxt build -b chrome",
+    "build:firefox": "wxt build -b firefox",
+    "dev": "wxt -b chrome",
+    "dev:firefox": "wxt -b firefox",
+    "format:check": "prettier --check .",
+    "package": "pnpm run package:chrome && pnpm run package:firefox",
+    "package:chrome": "wxt zip -b chrome",
+    "package:firefox": "wxt zip -b firefox",
+    "prepare": "wxt prepare",
+    "playwright:install": "playwright install chromium firefox",
+    "test": "pnpm run test:unit",
+    "test:e2e": "pnpm run test:e2e:chromium",
+    "test:e2e:chromium": "pnpm run build:chrome && playwright test --project=chromium-extension",
+    "test:integration": "vitest run tests/integration",
+    "test:smoke:firefox": "pnpm run build:firefox && playwright test --project=firefox-smoke",
+    "test:unit": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "typecheck": "wxt prepare && tsc --noEmit",
+    "verify:build": "node scripts/verify-build.mjs"
   },
   "dependencies": {
     "@wxt-dev/module-react": "latest",
-    "webextension-polyfill": "latest",
-    "wxt": "latest",
     "react": "latest",
-    "react-dom": "latest"
+    "react-dom": "latest",
+    "webextension-polyfill": "latest",
+    "wxt": "latest"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@testing-library/jest-dom": "latest",
     "@testing-library/react": "latest",
+    "@types/node": "^26.6.2",
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "@types/webextension-polyfill": "latest",
@@ -28,7 +47,8 @@
     "eslint": "latest",
     "jsdom": "latest",
     "prettier": "latest",
-    "typescript": "latest",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.70.0",
     "vitest": "latest"
   }
 }

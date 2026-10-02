@@ -17,15 +17,22 @@
 
 ```bash
 pnpm install
-pnpm exec wxt
+pnpm playwright:install
+pnpm dev
 ```
 
 ## Usage
 
 ```bash
-pnpm test
+pnpm format:check
+pnpm lint
+pnpm typecheck
+pnpm test:unit
 pnpm build
+pnpm verify:build
 ```
+
+Подробный сценарий сборки и проверки описан в [`docs/technical-prototype.md`](docs/technical-prototype.md).
 
 ## Architecture / Stack
 

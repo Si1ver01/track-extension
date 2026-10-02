@@ -1,14 +1,9 @@
-import { defineConfig } from 'wxt';
+import { defineConfig } from "wxt";
+import { createManifest } from "./src/manifest";
 
 export default defineConfig({
-  srcDir: 'src',
-  modules: ['@wxt-dev/module-react'],
-  manifest: {
-    name: 'Listener Lens',
-    description: 'Inspect registered browser listeners without collecting user payloads.',
-    permissions: ['tabs'],
-  },
-  browserSpecificSettings: {
-    gecko: { id: 'listener-lens@example.invalid', data_collection_permissions: { required: ['none'] } },
-  },
+  srcDir: "src",
+  modules: ["@wxt-dev/module-react"],
+  manifestVersion: 3,
+  manifest: ({ browser }) => createManifest(browser),
 });
