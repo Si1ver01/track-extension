@@ -1,10 +1,10 @@
 import { createLogger } from '../logger';
 import { describeEvent } from '../event-catalog/catalog';
-import type { ListenerRecord, SourceMetadata } from '../contracts/records';
+import type { ListenerOptions, ListenerRecord, SourceMetadata } from '../contracts/records';
 
 const logger = createLogger('records.normalize');
 
-export function normalizeRecord(input: Omit<ListenerRecord, 'description' | 'id' | 'capturedAt' | 'limitations'> & { id?: string; capturedAt?: number; limitations?: string[] }): ListenerRecord {
+export function normalizeRecord(input: Omit<ListenerRecord, 'description' | 'id' | 'capturedAt' | 'limitations' | 'lifecycle' | 'reasonCodes'> & { id?: string; capturedAt?: number; limitations?: string[]; lifecycle?: ListenerRecord['lifecycle']; reasonCodes?: ListenerRecord['reasonCodes']; listenerOptions?: ListenerOptions }): ListenerRecord {
   const record: ListenerRecord = {
     id: input.id ?? crypto.randomUUID(),
     eventType: input.eventType || 'unknown',
@@ -15,6 +15,10 @@ export function normalizeRecord(input: Omit<ListenerRecord, 'description' | 'id'
     browser: input.browser ?? 'unknown',
     capturedAt: input.capturedAt ?? Date.now(),
     limitations: input.limitations ?? [],
+    lifecycle: input.lifecycle ?? 'active',
+    reasonCodes: input.reasonCodes ?? [],
+    listenerKey: input.listenerKey,
+    listenerOptions: input.listenerOptions,
   };
   logger.debug('record normalized', { eventType: record.eventType, tabId: record.tabId, frameId: record.frameId });
   return record;

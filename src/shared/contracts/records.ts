@@ -1,11 +1,21 @@
 export type BrowserName = 'chrome' | 'firefox' | 'unknown';
 export type ListenerTarget = 'window' | 'document' | 'element' | 'unknown';
+export type ListenerLifecycle = 'active' | 'removed' | 'unknown';
+export type ListenerSourceKind = 'add-event-listener' | 'event-handler-property' | 'inline-attribute';
+export type ListenerReasonCode = 'HOOK_LATE' | 'SURFACE_UNVERIFIED' | 'RECORD_TRUNCATED' | 'RECORD_LIMIT_REACHED' | 'SOURCE_UNAVAILABLE';
+
+export interface ListenerOptions {
+  capture: boolean | null;
+  passive: boolean | null;
+  once: boolean | null;
+}
 
 export interface SourceMetadata {
   target: ListenerTarget;
   path: string;
   options?: string[];
   scriptLocation?: string;
+  sourceKind?: ListenerSourceKind;
 }
 
 export interface ListenerRecord {
@@ -18,6 +28,10 @@ export interface ListenerRecord {
   browser: BrowserName;
   capturedAt: number;
   limitations: string[];
+  lifecycle: ListenerLifecycle;
+  reasonCodes: ListenerReasonCode[];
+  listenerKey?: string;
+  listenerOptions?: ListenerOptions;
 }
 
 export interface ListenerMessage {
