@@ -1,1 +1,70 @@
-body { min-width: 320px; margin: 0; font: 14px system-ui, sans-serif; color: #172033; } main { padding: 16px; } h1 { font-size: 18px; margin-top: 0; } ul { padding-left: 18px; } li { margin: 10px 0; } small { color: #667085; }
+body {
+  min-width: 320px;
+  max-width: 440px;
+  margin: 0;
+  font:
+    14px system-ui,
+    sans-serif;
+  color: #172033;
+}
+
+main {
+  padding: 16px;
+}
+
+h1 {
+  margin-top: 0;
+  font-size: 18px;
+}
+
+.site {
+  overflow-wrap: anywhere;
+  font-weight: 600;
+}
+
+.scope,
+small {
+  color: #667085;
+  font-size: 12px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+button {
+  padding: 8px 10px;
+  border: 1px solid #2155cd;
+  border-radius: 6px;
+  background: #2155cd;
+  color: white;
+  font: inherit;
+  cursor: pointer;
+}
+
+button.secondary {
+  background: white;
+  color: #2155cd;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+button:focus-visible,
+[role="status"]:focus-visible {
+  outline: 2px solid #2155cd;
+  outline-offset: 3px;
+}
+
+ul {
+  padding-left: 18px;
+}
+
+li {
+  margin: 10px 0;
+  overflow-wrap: anywhere;
+}

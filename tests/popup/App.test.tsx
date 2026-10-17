@@ -1,40 +1,379 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import type { SiteAccessSnapshot } from "../../src/shared/contracts/site-access";
+import type { ListenerRecord } from "../../src/shared/contracts/records";
 
 const browserMocks = vi.hoisted(() => ({
   query: vi.fn(),
+  get: vi.fn(),
+  reload: vi.fn(),
+  request: vi.fn(),
   sendMessage: vi.fn(),
+  addListener: vi.fn(),
+  removeListener: vi.fn(),
 }));
 
-vi.mock('webextension-polyfill', () => ({
+vi.mock("webextension-polyfill", () => ({
   default: {
-    tabs: { query: browserMocks.query },
-    runtime: { sendMessage: browserMocks.sendMessage },
+    tabs: {
+      query: browserMocks.query,
+      get: browserMocks.get,
+      reload: browserMocks.reload,
+    },
+    permissions: { request: browserMocks.request },
+    runtime: {
+      sendMessage: browserMocks.sendMessage,
+      onMessage: {
+        addListener: browserMocks.addListener,
+        removeListener: browserMocks.removeListener,
+      },
+    },
   },
 }));
 
-import { App } from '../../src/entrypoints/popup/App';
+import { App } from "../../src/entrypoints/popup/App";
 
-describe('popup state', () => {
+const site = { pattern: "https://example.com/*", label: "https://example.com" };
+const record: ListenerRecord = {
+  id: "one",
+  tabId: 17,
+  eventType: "click",
+  description: "Обработчик на кнопке",
+  frameId: 2,
+  documentId: "document-one",
+  contextKind: "document",
+  source: { path: "button#save", target: "element" },
+  browser: "chrome",
+  capturedAt: 1,
+  limitations: [],
+  lifecycle: "active",
+  reasonCodes: [],
+};
+
+function snapshot(
+  status: SiteAccessSnapshot["status"],
+  records: ListenerRecord[] = [],
+): SiteAccessSnapshot {
+  return {
+    tabId: 17,
+    site: status === "unsupported" ? null : site,
+    status,
+    records,
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+async function notify(tabId = 17) {
+  const listener = browserMocks.addListener.mock.calls[0]![0] as (
+    message: unknown,
+  ) => void;
+  await act(async () => listener({ type: "site-access-updated", tabId }));
+}
+
+describe("popup site access", () => {
   beforeEach(() => {
-    browserMocks.query.mockReset();
-    browserMocks.sendMessage.mockReset();
-    browserMocks.query.mockResolvedValue([{ id: 17 }]);
+    Object.values(browserMocks).forEach((mock) => mock.mockReset());
+    browserMocks.query.mockResolvedValue([
+      { id: 17, url: "https://example.com/page" },
+    ]);
+    browserMocks.get.mockResolvedValue({
+      id: 17,
+      url: "https://example.com/page",
+    });
+    browserMocks.reload.mockResolvedValue(undefined);
+    browserMocks.request.mockResolvedValue(true);
+    browserMocks.sendMessage.mockResolvedValue(snapshot("no-access"));
   });
 
-  it('renders the tab state returned by the background', async () => {
-    browserMocks.sendMessage.mockResolvedValue({ tabId: 17, records: [], status: 'ready' });
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
 
+  it("shows loading and requests the active tab snapshot", async () => {
+    const response = deferred<SiteAccessSnapshot>();
+    browserMocks.sendMessage.mockReturnValue(response.promise);
     render(<App />);
-
-    expect(await screen.findByText('Статус: ready')).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toContain(
+      "Проверяем доступ",
+    );
+    await waitFor(() =>
+      expect(browserMocks.sendMessage).toHaveBeenCalledWith({
+        type: "get-site-access",
+        tabId: 17,
+      }),
+    );
+    await act(async () => response.resolve(snapshot("ready")));
+    expect(screen.getByText("Обработчики событий не найдены.")).toBeTruthy();
   });
 
-  it('shows an error when the background returns no state', async () => {
+  it("does not offer access to unsupported pages", async () => {
+    browserMocks.sendMessage.mockResolvedValue(snapshot("unsupported"));
+    render(<App />);
+    expect(
+      await screen.findByText(/На этой странице расширение недоступно/),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(browserMocks.request).not.toHaveBeenCalled();
+  });
+
+  it("retries a failed state request", async () => {
     browserMocks.sendMessage.mockResolvedValue(undefined);
-
     render(<App />);
+    expect(
+      await screen.findByText(/Не удалось получить состояние вкладки/),
+    ).toBeTruthy();
+    browserMocks.sendMessage.mockResolvedValue(snapshot("no-access"));
+    fireEvent.click(screen.getByRole("button", { name: "Повторить проверку" }));
+    expect(
+      await screen.findByRole("button", { name: "Разрешить для этого сайта" }),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Не удалось получить/)).toBeNull();
+  });
 
-    expect(await screen.findByText('Не удалось получить состояние вкладки.')).toBeTruthy();
+  it("requests only the prepared site synchronously in the click handler", async () => {
+    const permission = deferred<boolean>();
+    browserMocks.request.mockReturnValue(permission.promise);
+    render(<App />);
+    const button = await screen.findByRole("button", {
+      name: "Разрешить для этого сайта",
+    });
+    browserMocks.sendMessage.mockResolvedValue(snapshot("reload-required"));
+    fireEvent.click(button);
+    expect(browserMocks.request).toHaveBeenCalledExactlyOnceWith({
+      origins: [site.pattern],
+    });
+    expect(browserMocks.sendMessage).toHaveBeenCalledTimes(1);
+    fireEvent.click(button);
+    expect(browserMocks.request).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("status").textContent).toContain(
+      "Подтвердите доступ",
+    );
+    await act(async () => permission.resolve(true));
+    expect(browserMocks.sendMessage).toHaveBeenLastCalledWith({
+      type: "activate-site",
+      tabId: 17,
+      pattern: site.pattern,
+    });
+    expect(
+      screen.getByRole("button", { name: "Перезагрузить вкладку" }),
+    ).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByRole("status"));
+    expect(browserMocks.reload).not.toHaveBeenCalled();
+  });
+
+  it("treats denial as a normal result and allows a new request", async () => {
+    browserMocks.request.mockResolvedValue(false);
+    render(<App />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Разрешить для этого сайта" }),
+    );
+    expect(await screen.findByText(/Доступ не предоставлен/)).toBeTruthy();
+    expect(browserMocks.sendMessage).toHaveBeenCalledTimes(1);
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Разрешить для этого сайта",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(false);
+    expect(screen.queryByText("Обработчики событий не найдены.")).toBeNull();
+  });
+
+  it.each(["async", "sync"])(
+    "shows a safe error after a %s permission API failure",
+    async (kind) => {
+      if (kind === "sync")
+        browserMocks.request.mockImplementation(() => {
+          throw new Error("sensitive URL");
+        });
+      else browserMocks.request.mockRejectedValue(new Error("sensitive URL"));
+      render(<App />);
+      fireEvent.click(
+        await screen.findByRole("button", {
+          name: "Разрешить для этого сайта",
+        }),
+      );
+      expect(
+        await screen.findByText(/Не удалось разрешить доступ/),
+      ).toBeTruthy();
+      expect(screen.queryByText("sensitive URL")).toBeNull();
+      expect(
+        (
+          screen.getByRole("button", {
+            name: "Разрешить для этого сайта",
+          }) as HTMLButtonElement
+        ).disabled,
+      ).toBe(false);
+    },
+  );
+
+  it("reloads only the original tab after checking its site", async () => {
+    browserMocks.sendMessage.mockResolvedValue(snapshot("reload-required"));
+    render(<App />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Перезагрузить вкладку" }),
+    );
+    await waitFor(() =>
+      expect(browserMocks.reload).toHaveBeenCalledExactlyOnceWith(17),
+    );
+    expect(browserMocks.get).toHaveBeenCalledWith(17);
+    expect(await screen.findByText(/Ожидаем готовности страницы/)).toBeTruthy();
+    expect(screen.queryByText("Обработчики событий не найдены.")).toBeNull();
+  });
+
+  it("does not reload a tab that navigated to another site", async () => {
+    browserMocks.sendMessage
+      .mockResolvedValueOnce(snapshot("reload-required"))
+      .mockResolvedValue(snapshot("no-access"));
+    browserMocks.get.mockResolvedValue({
+      id: 17,
+      url: "https://another.example/page",
+    });
+    render(<App />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Перезагрузить вкладку" }),
+    );
+    expect(
+      await screen.findByRole("button", { name: "Разрешить для этого сайта" }),
+    ).toBeTruthy();
+    expect(browserMocks.reload).not.toHaveBeenCalled();
+  });
+
+  it("does not reload while a navigation to another site is pending", async () => {
+    browserMocks.sendMessage.mockResolvedValue(snapshot("reload-required"));
+    browserMocks.get.mockResolvedValue({
+      id: 17,
+      url: "https://example.com/page",
+      pendingUrl: "https://another.example/page",
+    });
+    render(<App />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Перезагрузить вкладку" }),
+    );
+    await waitFor(() => expect(browserMocks.get).toHaveBeenCalledWith(17));
+    expect(browserMocks.reload).not.toHaveBeenCalled();
+  });
+
+  it("handles a closed tab during reload", async () => {
+    browserMocks.sendMessage.mockResolvedValue(snapshot("reload-required"));
+    browserMocks.get.mockRejectedValue(new Error("closed"));
+    render(<App />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Перезагрузить вкладку" }),
+    );
+    expect(
+      await screen.findByText(/Не удалось перезагрузить вкладку/),
+    ).toBeTruthy();
+    expect(browserMocks.reload).not.toHaveBeenCalled();
+  });
+
+  it("revokes access through the background and removes collected records", async () => {
+    browserMocks.sendMessage
+      .mockResolvedValueOnce(snapshot("ready", [record]))
+      .mockResolvedValue(snapshot("no-access"));
+    render(<App />);
+    expect(await screen.findByText("click")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Отозвать доступ" }));
+    expect(
+      await screen.findByRole("button", { name: "Разрешить для этого сайта" }),
+    ).toBeTruthy();
+    expect(browserMocks.sendMessage).toHaveBeenLastCalledWith({
+      type: "revoke-site",
+      tabId: 17,
+      pattern: site.pattern,
+    });
+    expect(screen.queryByText("click")).toBeNull();
+  });
+
+  it("updates an open popup after external revocation and ignores other tabs", async () => {
+    browserMocks.sendMessage.mockResolvedValue(snapshot("ready", [record]));
+    render(<App />);
+    expect(await screen.findByText("click")).toBeTruthy();
+    await notify(99);
+    expect(browserMocks.sendMessage).toHaveBeenCalledTimes(1);
+    browserMocks.sendMessage.mockResolvedValue(snapshot("no-access"));
+    await notify();
+    expect(screen.queryByText("click")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Разрешить для этого сайта" }),
+    ).toBeTruthy();
+  });
+
+  it("ignores an older snapshot that resolves after revocation", async () => {
+    browserMocks.sendMessage.mockResolvedValue(snapshot("ready", [record]));
+    render(<App />);
+    expect(await screen.findByText("click")).toBeTruthy();
+    const olderState = deferred<SiteAccessSnapshot>();
+    browserMocks.sendMessage.mockReturnValueOnce(olderState.promise);
+    await notify();
+    browserMocks.sendMessage.mockResolvedValue(snapshot("no-access"));
+    fireEvent.click(screen.getByRole("button", { name: "Отозвать доступ" }));
+    expect(
+      await screen.findByRole("button", { name: "Разрешить для этого сайта" }),
+    ).toBeTruthy();
+    await act(async () => olderState.resolve(snapshot("ready", [record])));
+    expect(screen.queryByText("click")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Разрешить для этого сайта" }),
+    ).toBeTruthy();
+  });
+
+  it("preserves record metadata and never confirms emptiness for limited results", async () => {
+    browserMocks.sendMessage.mockResolvedValue(snapshot("limited", [record]));
+    render(<App />);
+    expect(await screen.findByText("click")).toBeTruthy();
+    expect(
+      screen.getByText("button#save · frame 2 · document document-one"),
+    ).toBeTruthy();
+    browserMocks.sendMessage.mockResolvedValue(snapshot("limited"));
+    await notify();
+    expect(screen.getByText("Пока нет данных об обработчиках.")).toBeTruthy();
+    expect(screen.queryByText("Обработчики событий не найдены.")).toBeNull();
+  });
+
+  it("stops readiness polling at its deadline and retries", async () => {
+    vi.useFakeTimers();
+    browserMocks.sendMessage.mockResolvedValue(snapshot("recovering"));
+    render(<App />);
+    await act(async () => {});
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expect(screen.getByText(/Страница не подтвердила готовность/)).toBeTruthy();
+    const calls = browserMocks.sendMessage.mock.calls.length;
+    await act(async () => vi.advanceTimersByTimeAsync(2_000));
+    expect(browserMocks.sendMessage).toHaveBeenCalledTimes(calls);
+    browserMocks.sendMessage.mockResolvedValue(snapshot("ready"));
+    fireEvent.click(screen.getByRole("button", { name: "Повторить проверку" }));
+    await act(async () => {});
+    expect(screen.getByText("Обработчики событий не найдены.")).toBeTruthy();
+  });
+
+  it("cleans up its listener and pending grant when the popup closes", async () => {
+    const permission = deferred<boolean>();
+    browserMocks.request.mockReturnValue(permission.promise);
+    const { unmount } = render(<App />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Разрешить для этого сайта" }),
+    );
+    unmount();
+    await act(async () => permission.resolve(true));
+    expect(browserMocks.removeListener).toHaveBeenCalledWith(
+      browserMocks.addListener.mock.calls[0]![0],
+    );
+    expect(browserMocks.sendMessage).toHaveBeenCalledTimes(1);
   });
 });

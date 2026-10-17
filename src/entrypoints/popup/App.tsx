@@ -1,84 +1,124 @@
-import { useEffect, useState } from "react";
-import browser from "webextension-polyfill";
-import {
-  contextCapabilities,
-  type TabState,
-} from "../../shared/contracts/records";
-import { createLogger } from "../../shared/logger";
+import { useEffect, useRef } from "react";
+import { useSiteAccess } from "./useSiteAccess";
 
-const logger = createLogger("popup");
+const statusMessages = {
+  unsupported:
+    "На этой странице расширение недоступно. Откройте обычный сайт по HTTP или HTTPS.",
+  "no-access":
+    "Разрешите доступ, чтобы видеть обработчики событий на этом сайте.",
+  "reload-required":
+    "Доступ разрешён. Перезагрузите вкладку, чтобы начать сбор с загрузки страницы.",
+  recovering: "Ожидаем готовности страницы и собираем обработчики…",
+  ready: "Сбор обработчиков работает.",
+  limited:
+    "Часть обработчиков может быть недоступна. Ниже показаны полученные данные.",
+  error:
+    "Не удалось запустить сбор обработчиков. Повторите проверку или перезагрузите страницу.",
+};
+
+const issueMessages = {
+  load: "Не удалось получить состояние вкладки. Повторите проверку.",
+  grant: "Не удалось разрешить доступ. Повторите запрос.",
+  reload:
+    "Не удалось перезагрузить вкладку. Проверьте, что она открыта, и повторите попытку.",
+  revoke: "Не удалось отозвать доступ. Повторите попытку.",
+  denied: "Доступ не предоставлен. Вы можете разрешить его позже.",
+  changed: "Вкладка перешла на другой сайт. Проверьте доступ заново.",
+  timeout:
+    "Страница не подтвердила готовность. Повторите проверку или перезагрузите её.",
+};
+
+const pendingMessages = {
+  grant: "Подтвердите доступ в окне браузера…",
+  reload: "Перезагружаем вкладку…",
+  revoke: "Отзываем доступ…",
+};
 
 export function App() {
-  const [state, setState] = useState<TabState | null>(null);
-  const [error, setError] = useState(false);
+  const { snapshot, pending, issue, grant, reload, revoke, retry } =
+    useSiteAccess();
+  const statusRef = useRef<HTMLParagraphElement>(null);
+  const status = snapshot?.status;
+  const hasAccess =
+    snapshot?.site && status !== "no-access" && status !== "unsupported";
+  const showRecords =
+    (status === "ready" || status === "limited") && !pending && !issue;
+
   useEffect(() => {
-    let active = true;
-    void (async () => {
-      try {
-        const [tab] = await browser.tabs.query({
-          active: true,
-          currentWindow: true,
-        });
-        if (!tab || tab.id === undefined)
-          throw new Error("active tab has no id");
-        const nextState = (await browser.runtime.sendMessage({
-          type: "get-tab-state",
-          tabId: tab.id,
-        })) as TabState | undefined;
-        if (!nextState) throw new Error("background returned no tab state");
-        if (active) setState(nextState);
-      } catch (requestError) {
-        logger.warn("[FIX] popup state request failed", {
-          error: String(requestError),
-        });
-        if (active) setError(true);
-      }
-    })();
-    return () => {
-      active = false;
-    };
-  }, []);
-  if (error)
-    return (
-      <main>
-        <p>Не удалось получить состояние вкладки.</p>
-      </main>
-    );
-  if (!state)
-    return (
-      <main>
-        <p>Сканирование…</p>
-      </main>
-    );
+    if (issue || status === "reload-required") statusRef.current?.focus();
+  }, [issue, status]);
+
+  const message = pending
+    ? pendingMessages[pending]
+    : issue
+      ? issueMessages[issue]
+      : status
+        ? statusMessages[status]
+        : "Проверяем доступ к сайту…";
+
   return (
-    <main>
+    <main aria-busy={Boolean(pending) || (!snapshot && !issue)}>
       <h1>Listener Lens</h1>
-      <p>Статус: {state.status}</p>
-      <p>
-        Worker-контексты:{" "}
-        {contextCapabilities.find(
-          (capability) => capability.contextKind === "worker",
-        )?.supported
-          ? "поддерживаются"
-          : "не поддерживаются в MVP"}
+      {snapshot?.site && <p className="site">{snapshot.site.label}</p>}
+      <p ref={statusRef} tabIndex={-1} role="status" aria-live="polite">
+        {message}
       </p>
-      {state.records.length === 0 ? (
-        <p>События не найдены.</p>
-      ) : (
-        <ul>
-          {state.records.map((record) => (
-            <li key={record.id}>
-              <strong>{record.eventType}</strong>
-              <br />
-              {record.description}
-              <br />
-              <small>
-                {record.source.path} · frame {record.frameId} · document{" "}
-                {record.documentId}
-              </small>
-            </li>
-          ))}
-        </ul>
+      {snapshot?.site && status !== "unsupported" && (
+        <p className="scope">
+          Доступ действует для всех страниц и портов этого адреса.
+        </p>
+      )}
+      <div className="actions">
+        {status === "no-access" && snapshot?.site && (
+          <button type="button" disabled={Boolean(pending)} onClick={grant}>
+            Разрешить для этого сайта
+          </button>
+        )}
+        {status === "reload-required" && (
+          <button type="button" disabled={Boolean(pending)} onClick={reload}>
+            Перезагрузить вкладку
+          </button>
+        )}
+        {(issue || status === "error") && (
+          <button type="button" disabled={Boolean(pending)} onClick={retry}>
+            Повторить проверку
+          </button>
+        )}
+        {hasAccess && (
+          <button
+            type="button"
+            className="secondary"
+            disabled={Boolean(pending)}
+            onClick={revoke}
+          >
+            Отозвать доступ
+          </button>
+        )}
+      </div>
+      {showRecords && snapshot && (
+        <>
+          {snapshot.records.length > 0 ? (
+            <ul>
+              {snapshot.records.map((record) => (
+                <li key={record.id}>
+                  <strong>{record.eventType}</strong>
+                  <br />
+                  {record.description}
+                  <br />
+                  <small>
+                    {record.source.path} · frame {record.frameId} · document{" "}
+                    {record.documentId}
+                  </small>
+                </li>
+              ))}
+            </ul>
+          ) : status === "ready" ? (
+            <p>Обработчики событий не найдены.</p>
+          ) : (
+            <p>Пока нет данных об обработчиках.</p>
+          )}
+          <p className="scope">Worker-контексты не поддерживаются в MVP.</p>
+        </>
       )}
     </main>
   );
