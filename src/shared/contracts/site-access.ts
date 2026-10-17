@@ -19,6 +19,7 @@ export interface SiteAccessSnapshot {
   site: SiteScope | null;
   status: SiteAccessStatus;
   records: ListenerRecord[];
+  documentId?: string;
   reason?: string;
 }
 

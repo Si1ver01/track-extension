@@ -40,6 +40,9 @@ function isSnapshot(
     typeof candidate.status === "string" &&
     statuses.has(candidate.status) &&
     Array.isArray(candidate.records) &&
+    (candidate.documentId === undefined ||
+      (typeof candidate.documentId === "string" &&
+        candidate.documentId.length > 0)) &&
     (candidate.site === null ||
       (typeof candidate.site?.pattern === "string" &&
         typeof candidate.site.label === "string"))

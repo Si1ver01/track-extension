@@ -286,6 +286,7 @@ export class SiteAccessController {
         site,
         status: partial || state.status === "limited" ? "limited" : "ready",
         records: state.records,
+        documentId: main.documentId,
         ...(partial ? { reason: "FRAME_PARTIAL" } : {}),
       };
     } catch {
@@ -458,7 +459,8 @@ export class SiteAccessController {
         const current = await this.snapshot(tabId);
         if (current.site?.pattern !== site.pattern)
           return {
-            ...current,
+            tabId: current.tabId,
+            site: current.site,
             records: [],
             status: "error",
             reason: "SITE_CHANGED",

@@ -256,6 +256,70 @@ describe("persistent site access", () => {
     expect((await controller.snapshot(10)).status).toBe("reload-required");
     expect(api.scripting.registerContentScripts).toHaveBeenCalledTimes(2);
   });
+  it("передаёт документ главного frame без его записей и при наличии только iframe-записей", async () => {
+    const { controller } = fixture();
+    const main = await ready(controller);
+    expect(await controller.snapshot(10)).toMatchObject({
+      status: "ready",
+      documentId: "native-a",
+      records: [],
+    });
+
+    const child = { ...sender, frameId: 2, documentId: "native-child" };
+    const session = await ready(controller, child, "child-own");
+    await controller.handleMessage(record(session.token), child);
+    await controller.handleMessage(
+      { type: "collector-frames-changed", token: main.token, partial: true },
+      sender,
+    );
+
+    const snapshot = await controller.snapshot(10);
+    expect(snapshot).toMatchObject({
+      status: "limited",
+      documentId: "native-a",
+    });
+    expect(snapshot.records).toHaveLength(1);
+    expect(snapshot.records[0]).toMatchObject({
+      frameId: 2,
+      documentId: "native-child",
+    });
+  });
+  it("меняет documentId при замене главного документа до появления новых записей", async () => {
+    const { controller } = fixture();
+    await ready(controller);
+    expect((await controller.snapshot(10)).documentId).toBe("native-a");
+
+    const nextSender = { ...sender, documentId: "native-next" };
+    const next = await start(controller, nextSender, "own-next");
+    const installing = await controller.snapshot(10);
+    expect(installing.status).toBe("recovering");
+    expect(installing).not.toHaveProperty("documentId");
+    await controller.handleMessage(
+      { type: "collector-ready", documentId: "own-next", token: next.token },
+      nextSender,
+    );
+
+    expect(await controller.snapshot(10)).toMatchObject({
+      status: "ready",
+      documentId: "native-next",
+      records: [],
+    });
+  });
+  it("не раскрывает прежний documentId после отзыва доступа", async () => {
+    const { controller } = fixture();
+    await ready(controller);
+    expect((await controller.snapshot(10)).documentId).toBe("native-a");
+
+    const revoked = await controller.handleMessage(
+      { type: "revoke-site", tabId: 10, pattern },
+      {},
+    );
+    expect(revoked).toMatchObject({ status: "no-access", records: [] });
+    expect(revoked).not.toHaveProperty("documentId");
+    const snapshot = await controller.snapshot(10);
+    expect(snapshot.status).toBe("no-access");
+    expect(snapshot).not.toHaveProperty("documentId");
+  });
   it.each(["added", "removed"] as const)(
     "keeps a ready scope alive during an unrelated %s permission event",
     async (event) => {

@@ -287,7 +287,9 @@ describe("popup site access", () => {
       .mockResolvedValueOnce(snapshot("ready", [record]))
       .mockResolvedValue(snapshot("no-access"));
     render(<App />);
-    expect(await screen.findByText("click")).toBeTruthy();
+    expect(
+      await screen.findByRole("heading", { name: /^click\b/ }),
+    ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Отозвать доступ" }));
     expect(
       await screen.findByRole("button", { name: "Разрешить для этого сайта" }),
@@ -297,18 +299,20 @@ describe("popup site access", () => {
       tabId: 17,
       pattern: site.pattern,
     });
-    expect(screen.queryByText("click")).toBeNull();
+    expect(screen.queryByRole("heading", { name: /^click\b/ })).toBeNull();
   });
 
   it("updates an open popup after external revocation and ignores other tabs", async () => {
     browserMocks.sendMessage.mockResolvedValue(snapshot("ready", [record]));
     render(<App />);
-    expect(await screen.findByText("click")).toBeTruthy();
+    expect(
+      await screen.findByRole("heading", { name: /^click\b/ }),
+    ).toBeTruthy();
     await notify(99);
     expect(browserMocks.sendMessage).toHaveBeenCalledTimes(1);
     browserMocks.sendMessage.mockResolvedValue(snapshot("no-access"));
     await notify();
-    expect(screen.queryByText("click")).toBeNull();
+    expect(screen.queryByRole("heading", { name: /^click\b/ })).toBeNull();
     expect(
       screen.getByRole("button", { name: "Разрешить для этого сайта" }),
     ).toBeTruthy();
@@ -317,7 +321,9 @@ describe("popup site access", () => {
   it("ignores an older snapshot that resolves after revocation", async () => {
     browserMocks.sendMessage.mockResolvedValue(snapshot("ready", [record]));
     render(<App />);
-    expect(await screen.findByText("click")).toBeTruthy();
+    expect(
+      await screen.findByRole("heading", { name: /^click\b/ }),
+    ).toBeTruthy();
     const olderState = deferred<SiteAccessSnapshot>();
     browserMocks.sendMessage.mockReturnValueOnce(olderState.promise);
     await notify();
@@ -327,7 +333,7 @@ describe("popup site access", () => {
       await screen.findByRole("button", { name: "Разрешить для этого сайта" }),
     ).toBeTruthy();
     await act(async () => olderState.resolve(snapshot("ready", [record])));
-    expect(screen.queryByText("click")).toBeNull();
+    expect(screen.queryByRole("heading", { name: /^click\b/ })).toBeNull();
     expect(
       screen.getByRole("button", { name: "Разрешить для этого сайта" }),
     ).toBeTruthy();
@@ -336,7 +342,9 @@ describe("popup site access", () => {
   it("preserves record metadata and never confirms emptiness for limited results", async () => {
     browserMocks.sendMessage.mockResolvedValue(snapshot("limited", [record]));
     render(<App />);
-    expect(await screen.findByText("click")).toBeTruthy();
+    expect(
+      await screen.findByRole("heading", { name: /^click\b/ }),
+    ).toBeTruthy();
     expect(
       screen.getByText("button#save · frame 2 · document document-one"),
     ).toBeTruthy();
@@ -344,6 +352,91 @@ describe("popup site access", () => {
     await notify();
     expect(screen.getByText("Пока нет данных об обработчиках.")).toBeTruthy();
     expect(screen.queryByText("Обработчики событий не найдены.")).toBeNull();
+  });
+
+  it("сохраняет поиск при обновлении записей и смене полноты в том же документе", async () => {
+    const mainRecord = {
+      ...record,
+      id: "main",
+      frameId: 0,
+      documentId: "main-document",
+    };
+    browserMocks.sendMessage.mockResolvedValue({
+      ...snapshot("ready", [record]),
+      documentId: "main-document",
+    });
+    render(<App />);
+    const search = await screen.findByRole("searchbox", {
+      name: "Поиск по метаданным",
+    });
+    fireEvent.change(search, { target: { value: "click" } });
+    browserMocks.sendMessage.mockResolvedValue({
+      ...snapshot("limited", [record, mainRecord]),
+      documentId: "main-document",
+    });
+    await notify();
+    expect((search as HTMLInputElement).value).toBe("click");
+    browserMocks.sendMessage.mockResolvedValue({
+      ...snapshot("limited", [record]),
+      documentId: "main-document",
+    });
+    await notify();
+    expect(screen.getByRole("searchbox")).toBe(search);
+    expect((search as HTMLInputElement).value).toBe("click");
+  });
+
+  it("сбрасывает поиск при смене главного документа даже без его записей", async () => {
+    browserMocks.sendMessage.mockResolvedValue({
+      ...snapshot("limited", [record]),
+      documentId: "main-before",
+    });
+    render(<App />);
+    const search = await screen.findByRole("searchbox");
+    fireEvent.change(search, { target: { value: "нет-совпадений" } });
+    expect(screen.getByText("По запросу ничего не найдено.")).toBeTruthy();
+    browserMocks.sendMessage.mockResolvedValue({
+      ...snapshot("limited", [{ ...record, documentId: "frame-after" }]),
+      documentId: "main-after",
+    });
+    await notify();
+    expect((screen.getByRole("searchbox") as HTMLInputElement).value).toBe("");
+    expect(screen.getByRole("heading", { name: /^click\b/ })).toBeTruthy();
+    expect(screen.queryByText("По запросу ничего не найдено.")).toBeNull();
+  });
+
+  it("сбрасывает поиск при смене сайта и после отзыва с повторной выдачей", async () => {
+    browserMocks.sendMessage.mockResolvedValue({
+      ...snapshot("ready", [record]),
+      documentId: "main",
+    });
+    render(<App />);
+    fireEvent.change(await screen.findByRole("searchbox"), {
+      target: { value: "click" },
+    });
+    const otherSite = {
+      pattern: "https://other.example/*",
+      label: "https://other.example",
+    };
+    browserMocks.sendMessage.mockResolvedValue({
+      ...snapshot("ready", [record]),
+      site: otherSite,
+      documentId: "main",
+    });
+    await notify();
+    expect((screen.getByRole("searchbox") as HTMLInputElement).value).toBe("");
+    fireEvent.change(screen.getByRole("searchbox"), {
+      target: { value: "click" },
+    });
+    browserMocks.sendMessage.mockResolvedValue(snapshot("no-access"));
+    fireEvent.click(screen.getByRole("button", { name: "Отозвать доступ" }));
+    await screen.findByRole("button", { name: "Разрешить для этого сайта" });
+    expect(screen.queryByRole("searchbox")).toBeNull();
+    browserMocks.sendMessage.mockResolvedValue({
+      ...snapshot("ready", [record]),
+      documentId: "main-after-regrant",
+    });
+    await notify();
+    expect((screen.getByRole("searchbox") as HTMLInputElement).value).toBe("");
   });
 
   it("stops readiness polling at its deadline and retries", async () => {

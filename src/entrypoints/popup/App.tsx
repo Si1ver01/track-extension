@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useSiteAccess } from "./useSiteAccess";
+import { ResultsPanel } from "./ResultsPanel";
 
 const statusMessages = {
   unsupported:
@@ -97,26 +98,15 @@ export function App() {
       </div>
       {showRecords && snapshot && (
         <>
-          {snapshot.records.length > 0 ? (
-            <ul>
-              {snapshot.records.map((record) => (
-                <li key={record.id}>
-                  <strong>{record.eventType}</strong>
-                  <br />
-                  {record.description}
-                  <br />
-                  <small>
-                    {record.source.path} · frame {record.frameId} · document{" "}
-                    {record.documentId}
-                  </small>
-                </li>
-              ))}
-            </ul>
-          ) : status === "ready" ? (
-            <p>Обработчики событий не найдены.</p>
-          ) : (
-            <p>Пока нет данных об обработчиках.</p>
-          )}
+          <ResultsPanel
+            key={JSON.stringify([
+              snapshot.tabId,
+              snapshot.site?.pattern,
+              snapshot.documentId,
+            ])}
+            records={snapshot.records}
+            partial={status === "limited"}
+          />
           <p className="scope">Worker-контексты не поддерживаются в MVP.</p>
         </>
       )}
