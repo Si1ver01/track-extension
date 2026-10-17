@@ -11,10 +11,32 @@
       window.addEventListener("click", () => undefined);
       document.addEventListener("copy", () => undefined);
       const button = document.querySelector("#copy");
-      button.addEventListener("input", () => undefined, { capture: true, once: true });
+      button.addEventListener("input", () => undefined, {
+        capture: true,
+        once: true,
+      });
       button.onchange = () => undefined;
       button.setAttribute("onkeydown", "void 0");
       document.body.dataset.fixtureReady = "true";
+      const shadowHost = document.createElement("div");
+      shadowHost.id = "shadow-host";
+      document.body.append(shadowHost);
+      const openRoot = shadowHost.attachShadow({ mode: "open" });
+      const shadowButton = document.createElement("button");
+      shadowButton.textContent = "Shadow fixture";
+      openRoot.append(shadowButton);
+      shadowButton.addEventListener("click", () => undefined);
+      const closedHost = document.createElement("div");
+      closedHost.id = "closed-shadow-host";
+      document.body.append(closedHost);
+      const closedRoot = closedHost.attachShadow({ mode: "closed" });
+      closedRoot.addEventListener("copy", () => undefined);
+      const iframe = document.createElement("iframe");
+      iframe.src = "/context-frame.html";
+      iframe.title = "same origin context";
+      document.body.append(iframe);
+      history.pushState({}, "", "#spa");
+      window.dispatchEvent(new PopStateEvent("popstate"));
     </script>
   </body>
 </html>

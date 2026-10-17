@@ -22,6 +22,8 @@ export function createManifest(browser: BuildBrowser) {
       "Inspect registered browser listeners without collecting user payloads.",
     permissions: [...permissions],
     optional_host_permissions: [...optionalHostPermissions],
+    all_frames: true,
+    match_about_blank: true,
     ...firefoxMetadata,
   };
 }

@@ -27,4 +27,15 @@ describe("cross-browser manifest metadata", () => {
     });
     expect(chromeManifest).not.toHaveProperty("browser_specific_settings");
   });
+
+  it.each(["chrome", "firefox"] as const)(
+    "injects into every frame for %s",
+    (browser) => {
+      const manifest = createManifest(browser);
+      expect(manifest).toMatchObject({
+        all_frames: true,
+        match_about_blank: true,
+      });
+    },
+  );
 });

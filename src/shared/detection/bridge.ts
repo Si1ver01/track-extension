@@ -1,9 +1,29 @@
 import { normalizeRecord } from "../records/normalize";
-import type { BridgeRecordMessage, ListenerOptions } from "../contracts/records";
+import type {
+  BridgeRecordMessage,
+  ListenerOptions,
+  ListenerTarget,
+  PageContextKind,
+} from "../contracts/records";
 import { createListenerKey, ListenerRegistry } from "./registry";
 import { scanInlineSurface } from "./surfaces";
+import { createLogger } from "../logger";
 
-const supported = new Set(["click", "copy", "cut", "paste", "input", "change", "submit", "load", "error", "keydown", "keyup"]);
+const logger = createLogger("detection.bridge");
+
+const supported = new Set([
+  "click",
+  "copy",
+  "cut",
+  "paste",
+  "input",
+  "change",
+  "submit",
+  "load",
+  "error",
+  "keydown",
+  "keyup",
+]);
 
 export function createBridgeMessage(
   eventType: string,
@@ -12,7 +32,17 @@ export function createBridgeMessage(
   nonce = "",
   lifecycle: "active" | "removed" = "active",
   listenerKey = "",
-  listenerOptions: ListenerOptions = { capture: false, passive: null, once: null },
+  listenerOptions: ListenerOptions = {
+    capture: false,
+    passive: null,
+    once: null,
+  },
+  context: {
+    documentId?: string;
+    contextKind?: PageContextKind;
+    target?: ListenerTarget;
+    targetId?: string;
+  } = {},
 ): BridgeRecordMessage | null {
   if (!supported.has(eventType)) return null;
   return {
@@ -23,8 +53,10 @@ export function createBridgeMessage(
       eventType,
       tabId,
       frameId: 0,
+      documentId: context.documentId,
+      contextKind: context.contextKind,
       browser: "unknown",
-      source: { target: "window", path },
+      source: { target: context.target ?? "window", path },
       lifecycle,
       listenerKey,
       listenerOptions,
@@ -32,13 +64,21 @@ export function createBridgeMessage(
   };
 }
 
-export function installListenerHook(tabId = 0, nonce = ""): () => void {
+export function installListenerHook(
+  tabId = 0,
+  nonce = "",
+  contextDocumentId = "",
+): () => void {
   const original = EventTarget.prototype.addEventListener;
   const originalRemove = EventTarget.prototype.removeEventListener;
   const registry = new ListenerRegistry();
   const listenerKeys = new WeakMap<object, string>();
   const keyFor = (listener: EventListenerOrEventListenerObject) => {
-    if (!listener || (typeof listener !== "function" && typeof listener !== "object")) return "unknown-listener";
+    if (
+      !listener ||
+      (typeof listener !== "function" && typeof listener !== "object")
+    )
+      return "unknown-listener";
     const object = listener as object;
     const known = listenerKeys.get(object);
     if (known) return known;
@@ -46,27 +86,115 @@ export function installListenerHook(tabId = 0, nonce = ""): () => void {
     listenerKeys.set(object, key);
     return key;
   };
-  const optionsFor = (options: boolean | AddEventListenerOptions | undefined) => {
-    if (typeof options === "boolean") return { capture: options, passive: null, once: null };
-    return { capture: options?.capture ?? false, passive: options?.passive ?? null, once: options?.once ?? null };
+  const optionsFor = (
+    options: boolean | AddEventListenerOptions | undefined,
+  ) => {
+    if (typeof options === "boolean")
+      return { capture: options, passive: null, once: null };
+    return {
+      capture: options?.capture ?? false,
+      passive: options?.passive ?? null,
+      once: options?.once ?? null,
+    };
   };
-  const targetPath = (target: EventTarget) => target instanceof Element ? target.tagName.toLowerCase() : target === document ? "document" : "window";
+  const targetIds = new WeakMap<object, string>();
+  const documentId = contextDocumentId || crypto.randomUUID();
+  const navigationId = crypto.randomUUID();
+  const emitNavigation = (navigationKind: "spa" | "full") => {
+    window.postMessage(
+      {
+        source: "listener-lens",
+        nonce,
+        type: "context-navigation",
+        documentId,
+        contextKind: "document",
+        navigationId,
+        navigationKind,
+      },
+      "*",
+    );
+    logger.debug("navigation transition observed", {
+      navigationKind,
+      documentId,
+      navigationId,
+    });
+  };
+  const originalPushState = history.pushState;
+  const originalReplaceState = history.replaceState;
+  history.pushState = function (...args) {
+    const result = originalPushState.apply(this, args);
+    emitNavigation("spa");
+    return result;
+  };
+  history.replaceState = function (...args) {
+    const result = originalReplaceState.apply(this, args);
+    emitNavigation("spa");
+    return result;
+  };
+  const onPopState = () => emitNavigation("spa");
+  window.addEventListener("popstate", onPopState);
+  const targetId = (target: EventTarget) => {
+    if (
+      (typeof target !== "object" && typeof target !== "function") ||
+      target === null
+    )
+      return "target-unknown";
+    const object = target as object;
+    const existing = targetIds.get(object);
+    if (existing) return existing;
+    const id = `target-${crypto.randomUUID()}`;
+    targetIds.set(object, id);
+    return id;
+  };
+  const targetInfo = (
+    target: EventTarget,
+  ): { path: string; target: ListenerTarget; targetId: string } => {
+    const id = targetId(target);
+    if (target === window)
+      return { path: "window", target: "window", targetId: id };
+    if (target === document)
+      return { path: "document", target: "document", targetId: id };
+    if (target instanceof Element)
+      return {
+        path: target.tagName.toLowerCase(),
+        target: "element",
+        targetId: id,
+      };
+    if (typeof ShadowRoot !== "undefined" && target instanceof ShadowRoot)
+      return { path: "shadow-root", target: "element", targetId: id };
+    return { path: "unknown", target: "unknown", targetId: id };
+  };
   EventTarget.prototype.addEventListener = function (type, listener, options) {
     const eventType = String(type);
     const listenerKey = keyFor(listener ?? (() => undefined));
     const listenerOptions = optionsFor(options);
-    const path = targetPath(this);
+    const info = targetInfo(this);
     const message = createBridgeMessage(
       eventType,
       tabId,
-      path,
+      info.path,
       nonce,
       "active",
       listenerKey,
       listenerOptions,
+      {
+        documentId,
+        contextKind: "document",
+        target: info.target,
+        targetId: info.targetId,
+      },
     );
     if (message) {
-      const entry = registry.add({ eventType, targetPath: path, capture: listenerOptions.capture, listenerKey }, message.record!);
+      const entry = registry.add(
+        {
+          eventType,
+          targetPath: info.path,
+          targetId: info.targetId,
+          capture: listenerOptions.capture,
+          listenerKey,
+        },
+        message.record!,
+      );
       window.postMessage({ ...message, record: entry }, "*");
     }
     return original.call(this, type, listener, options);
@@ -76,22 +204,87 @@ export function installListenerHook(tabId = 0, nonce = ""): () => void {
     if (scannedElements.has(element)) return;
     scannedElements.add(element);
     for (const surface of scanInlineSurface(element)) {
-      const message = createBridgeMessage(surface.eventType, tabId, surface.path, nonce, 'active', '', { capture: false, passive: null, once: null });
-      if (message) window.postMessage({ ...message, record: { ...message.record!, source: { ...message.record!.source, sourceKind: surface.sourceKind }, reasonCodes: surface.reasonCodes } }, '*');
+      const message = createBridgeMessage(
+        surface.eventType,
+        tabId,
+        surface.path,
+        nonce,
+        "active",
+        "",
+        { capture: false, passive: null, once: null },
+      );
+      if (message)
+        window.postMessage(
+          {
+            ...message,
+            record: {
+              ...message.record!,
+              source: {
+                ...message.record!.source,
+                sourceKind: surface.sourceKind,
+              },
+              reasonCodes: surface.reasonCodes,
+            },
+          },
+          "*",
+        );
     }
   };
   const originalSetAttribute = Element.prototype.setAttribute;
   const handlerDescriptors = new Map<string, PropertyDescriptor>();
-  const handlerEvents = ["click", "copy", "cut", "paste", "input", "change", "submit", "load", "error", "keydown", "keyup"];
-  const emitSurface = (target: EventTarget, eventType: string, sourceKind: "event-handler-property" | "inline-attribute") => {
-    const path = targetPath(target);
-    const message = createBridgeMessage(eventType, tabId, path, nonce, "active", `surface-${eventType}-${path}`, { capture: false, passive: null, once: null });
+  const handlerEvents = [
+    "click",
+    "copy",
+    "cut",
+    "paste",
+    "input",
+    "change",
+    "submit",
+    "load",
+    "error",
+    "keydown",
+    "keyup",
+  ];
+  const emitSurface = (
+    target: EventTarget,
+    eventType: string,
+    sourceKind: "event-handler-property" | "inline-attribute",
+  ) => {
+    const info = targetInfo(target);
+    const message = createBridgeMessage(
+      eventType,
+      tabId,
+      info.path,
+      nonce,
+      "active",
+      `surface-${eventType}-${info.targetId}`,
+      { capture: false, passive: null, once: null },
+      {
+        documentId,
+        contextKind: "document",
+        target: info.target,
+        targetId: info.targetId,
+      },
+    );
     if (!message) return;
-    window.postMessage({ ...message, record: { ...message.record!, source: { ...message.record!.source, sourceKind }, reasonCodes: ["SURFACE_UNVERIFIED"] } }, "*");
+    window.postMessage(
+      {
+        ...message,
+        record: {
+          ...message.record!,
+          source: { ...message.record!.source, sourceKind },
+          reasonCodes: ["SURFACE_UNVERIFIED"],
+        },
+      },
+      "*",
+    );
   };
   for (const eventType of handlerEvents) {
     const property = `on${eventType}`;
-    const descriptor = Object.getOwnPropertyDescriptor(EventTarget.prototype, property);
+    const descriptor = Object.getOwnPropertyDescriptor(
+      EventTarget.prototype,
+      property,
+    );
     if (!descriptor?.set || !descriptor.get) continue;
     handlerDescriptors.set(property, descriptor);
     Object.defineProperty(EventTarget.prototype, property, {
@@ -100,28 +293,63 @@ export function installListenerHook(tabId = 0, nonce = ""): () => void {
       get: descriptor.get,
       set(value: EventListener | null) {
         descriptor.set!.call(this, value);
-        if (value !== null) emitSurface(this, eventType, "event-handler-property");
+        if (value !== null)
+          emitSurface(this, eventType, "event-handler-property");
       },
     });
   }
   Element.prototype.setAttribute = function (name, value) {
     const result = originalSetAttribute.call(this, name, value);
-    if (name.toLowerCase().startsWith('on')) scanElement(this);
+    if (name.toLowerCase().startsWith("on")) scanElement(this);
     return result;
   };
-  EventTarget.prototype.removeEventListener = function (type, listener, options) {
+  EventTarget.prototype.removeEventListener = function (
+    type,
+    listener,
+    options,
+  ) {
     const eventType = String(type);
     const listenerKey = keyFor(listener ?? (() => undefined));
     const listenerOptions = optionsFor(options);
-    const path = targetPath(this);
-    const removed = registry.remove({ eventType, targetPath: path, capture: listenerOptions.capture, listenerKey });
-    if (removed) window.postMessage({ source: "listener-lens", nonce, type: "listener-record", record: removed }, "*");
+    const info = targetInfo(this);
+    const removed = registry.remove({
+      eventType,
+      targetPath: info.path,
+      targetId: info.targetId,
+      capture: listenerOptions.capture,
+      listenerKey,
+    });
+    if (removed)
+      window.postMessage(
+        {
+          source: "listener-lens",
+          nonce,
+          type: "listener-record",
+          record: removed,
+        },
+        "*",
+      );
     return originalRemove.call(this, type, listener, options);
+  };
+  const originalAttachShadow = Element.prototype.attachShadow;
+  Element.prototype.attachShadow = function (init: ShadowRootInit) {
+    const root = originalAttachShadow.call(this, init);
+    logger.debug("shadow root observed", {
+      mode: init.mode,
+      documentId,
+      targetId: targetId(root),
+    });
+    return root;
   };
   return () => {
     EventTarget.prototype.addEventListener = original;
     EventTarget.prototype.removeEventListener = originalRemove;
     Element.prototype.setAttribute = originalSetAttribute;
-    for (const [property, descriptor] of handlerDescriptors) Object.defineProperty(EventTarget.prototype, property, descriptor);
+    Element.prototype.attachShadow = originalAttachShadow;
+    history.pushState = originalPushState;
+    history.replaceState = originalReplaceState;
+    window.removeEventListener("popstate", onPopState);
+    for (const [property, descriptor] of handlerDescriptors)
+      Object.defineProperty(EventTarget.prototype, property, descriptor);
   };
 }

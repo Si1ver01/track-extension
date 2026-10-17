@@ -77,6 +77,16 @@ for (const target of targets) {
     target.browser,
     "document_start content script is missing",
   );
+  requireCondition(
+    contentScripts.some((entry) => entry.all_frames === true),
+    target.browser,
+    "all_frames content script is missing",
+  );
+  requireCondition(
+    contentScripts.some((entry) => entry.match_about_blank === true),
+    target.browser,
+    "match_about_blank content script is missing",
+  );
 
   if (target.browser === "firefox") {
     const gecko = manifest.browser_specific_settings?.gecko;

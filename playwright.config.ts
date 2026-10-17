@@ -1,6 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const fixturePort = 4173;
+const fixturePort = Number(process.env.FIXTURE_PORT ?? 4173);
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -15,7 +15,7 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   webServer: {
-    command: "node tests/e2e/fixture-server.mjs",
+    command: `FIXTURE_PORT=${fixturePort} node tests/e2e/fixture-server.mjs`,
     port: fixturePort,
     reuseExistingServer: !process.env.CI,
     stdout: "pipe",
