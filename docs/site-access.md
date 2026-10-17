@@ -1,4 +1,4 @@
-[← Сборка и проверки](technical-prototype.md) · [К README](../README.md)
+[← Сборка и проверки](technical-prototype.md) · [К README](../README.md) · [Панель результатов →](popup-results.md)
 
 # Доступ к сайту
 
@@ -73,5 +73,6 @@ pnpm test:e2e:chromium:native
 
 ## См. также
 
+- [Панель результатов](popup-results.md)
 - [Сборка и проверки](technical-prototype.md)
 - [README](../README.md)

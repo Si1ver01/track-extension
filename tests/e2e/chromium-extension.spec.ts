@@ -176,6 +176,116 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
       .toBe(true);
     expect((await snapshot()).status).toBe("limited");
 
+    const readResults = () =>
+      control.evaluate(() => {
+        const popup = (
+          window as unknown as ExtensionWindow
+        ).chrome.extension.getViews({ type: "popup" })[0];
+        return {
+          query: popup?.document.querySelector<HTMLInputElement>(
+            'input[type="search"]',
+          )?.value,
+          text: popup?.document.body.innerText ?? "",
+          groups: Array.from(
+            popup?.document.querySelectorAll(".results-group h3") ?? [],
+            (node) => node.textContent,
+          ),
+          cards: Array.from(
+            popup?.document.querySelectorAll<HTMLDetailsElement>(
+              "details.listener-record",
+            ) ?? [],
+            (node) => ({
+              summary: node.querySelector("summary")?.textContent ?? "",
+              metadata: node.querySelector("dl")?.textContent ?? "",
+              open: node.open,
+            }),
+          ),
+          fits: popup
+            ? popup.document.documentElement.scrollWidth <=
+              popup.document.documentElement.clientWidth
+            : false,
+        };
+      });
+    const setSearch = (query: string) =>
+      control.evaluate((value) => {
+        const popup = (
+          window as unknown as ExtensionWindow
+        ).chrome.extension.getViews({ type: "popup" })[0];
+        const input = popup?.document.querySelector<HTMLInputElement>(
+          'input[type="search"]',
+        );
+        if (!input) throw new Error("Нет поля поиска настоящего popup");
+        Object.getOwnPropertyDescriptor(
+          Object.getPrototypeOf(input),
+          "value",
+        )!.set!.call(input, value);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }, query);
+
+    await expect.poll(async () => (await readResults()).query).toBe("");
+    await expect
+      .poll(async () =>
+        (await snapshot()).records.some(
+          (record) =>
+            record.eventType === "click" &&
+            record.frameId === 0 &&
+            record.source.path === "button",
+        ),
+      )
+      .toBe(true);
+    const buttonRecord = (await snapshot()).records.find(
+      (record) =>
+        record.eventType === "click" &&
+        record.frameId === 0 &&
+        record.source.path === "button",
+    )!;
+    await setSearch("  CLICK button  ");
+    await expect
+      .poll(async () => (await readResults()).cards.length)
+      .toBeGreaterThan(0);
+    await expect.poll(async () => (await readResults()).groups.length).toBe(1);
+    expect((await readResults()).groups[0]).toMatch(/^click\s*·/);
+    expect(
+      (await readResults()).cards.every(
+        (card) =>
+          card.summary.includes("button") && card.summary.includes("click"),
+      ),
+    ).toBe(true);
+    await setSearch("несуществующие-метаданные");
+    await expect
+      .poll(async () => (await readResults()).text)
+      .toContain("По запросу ничего не найдено.");
+    expect((await readResults()).cards).toEqual([]);
+    await clickPopup("Сбросить поиск");
+    await expect.poll(async () => (await readResults()).query).toBe("");
+    await control.evaluate((documentId) => {
+      const popup = (
+        window as unknown as ExtensionWindow
+      ).chrome.extension.getViews({ type: "popup" })[0];
+      const card = Array.from(
+        popup?.document.querySelectorAll<HTMLDetailsElement>(
+          "details.listener-record",
+        ) ?? [],
+      ).find((node) =>
+        node.querySelector("summary")?.textContent?.includes(documentId),
+      );
+      if (!card) throw new Error("Нет карточки главного документа");
+      card.querySelector("summary")!.click();
+    }, buttonRecord.documentId);
+    await expect
+      .poll(async () =>
+        (await readResults()).cards.some(
+          (card) =>
+            card.open &&
+            card.metadata.includes(buttonRecord.documentId) &&
+            card.metadata.includes("Фрейм (frameId)"),
+        ),
+      )
+      .toBe(true);
+    expect((await readResults()).text).toContain("Источник (sourceKind)");
+    expect((await readResults()).text).toContain("capture");
+    expect((await readResults()).fits).toBe(true);
+
     const otherUrl = new URL(fixtureUrl);
     otherUrl.hostname = "127.0.0.1";
     const otherId = await control.evaluate(
@@ -218,6 +328,8 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
     await expect.poll(popupText).toContain("Отозвать доступ");
     await clickPopup("Отозвать доступ");
     await expect.poll(async () => (await snapshot()).records.length).toBe(0);
+    await expect.poll(async () => (await readResults()).query).toBeUndefined();
+    expect((await readResults()).cards).toEqual([]);
     expect((await snapshot(secondId)).records).toEqual([]);
     expect(
       await control.evaluate(
@@ -238,16 +350,16 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
         ),
       )
       .toEqual([]);
-    await fixture.evaluate(() =>
-      window.addEventListener("listener-lens-after-revoke", () => {}),
-    );
+    await fixture.evaluate(() => window.addEventListener("copy", () => {}));
+    await fixture.waitForTimeout(500);
     expect((await snapshot()).records).toEqual([]);
     console.debug(
       JSON.stringify({
         scope: "chromium-extension",
         message:
           "PASS: real popup; exact grant; real listeners; two tabs; host isolation; revoke",
-        nativePermissionPrompt: "manual-required",
+        nativePermissionPrompt: "covered-by-separate-native-test",
+        resultsBrowsing: "verified",
       }),
     );
   } finally {

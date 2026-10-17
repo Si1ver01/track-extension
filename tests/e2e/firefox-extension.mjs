@@ -76,6 +76,37 @@ try {
     );
   }
   const snapshot = (tabId) => message({ type: "get-site-access", tabId });
+  const popupResults = () =>
+    api(`const popup = browser.extension.getViews({type: 'popup'})[0];
+      if (!popup) return null;
+      const document = popup.document;
+      const input = document.querySelector('input[type="search"]');
+      return {
+        search: input && {
+          value: input.value,
+          label: document.querySelector('label[for="' + input.id + '"]')?.textContent.trim()
+        },
+        groups: [...document.querySelectorAll('h3')].map(group => group.textContent.trim()),
+        count: document.querySelector('.results-count')?.textContent.trim(),
+        text: document.body.textContent,
+        records: [...document.querySelectorAll('details.listener-record')].map(record => ({
+          eventType: record.querySelector('.record-event')?.textContent.trim(),
+          context: record.querySelector('.record-context')?.textContent.trim(),
+          open: record.open,
+          metadata: Object.fromEntries([...record.querySelectorAll('.record-metadata > div')]
+            .map(row => [row.querySelector('dt').textContent.trim(), row.querySelector('dd').textContent.trim()]))
+        }))
+      };`);
+  async function searchPopup(query) {
+    await api(
+      `const popup = browser.extension.getViews({type: 'popup'})[0];
+      const input = popup.document.querySelector('input[type="search"]');
+      if (!input) throw new Error('Поле поиска настоящего popup недоступно');
+      Object.getOwnPropertyDescriptor(popup.HTMLInputElement.prototype, 'value').set.call(input, arguments[0]);
+      input.dispatchEvent(new popup.Event('input', {bubbles: true}));`,
+      [query],
+    );
+  }
   const fixture = await api(
     "return browser.tabs.create({ url: arguments[0], active: false });",
     [fixtureUrl],
@@ -197,6 +228,116 @@ try {
     "Firefox failed to collect in a second authorized tab",
   );
   assert.equal((await snapshot(other.id)).records.length, 0);
+
+  // Проверяем результаты настоящего action popup на записях установленного add-on.
+  const buttonRecord = collected.records.find(
+    (record) =>
+      record.eventType === "click" &&
+      record.frameId === 0 &&
+      record.source.path === "button",
+  );
+  assert.ok(
+    buttonRecord,
+    "Firefox не собрал обработчик кнопки основной страницы",
+  );
+  await api(
+    "browser.extension.getViews({type: 'popup'}).forEach(view => view.close());",
+  );
+  await poll(
+    () => api("return browser.extension.getViews({type: 'popup'}).length;"),
+    (count) => count === 0,
+    "Firefox не закрыл предыдущий action popup",
+  );
+  await openActionPopup(fixture.id);
+  const initialResults = await poll(
+    popupResults,
+    (results) =>
+      results?.records.some((record) => record.eventType === "click"),
+    "Настоящий popup Firefox не показал собранные записи",
+  );
+  assert.equal(initialResults.search.label, "Поиск по метаданным");
+  assert.ok(
+    initialResults.groups.some((group) => group.startsWith("click · ")),
+  );
+
+  await searchPopup("click button");
+  const filteredResults = await poll(
+    popupResults,
+    (results) =>
+      results?.records.length > 0 &&
+      results.records.every(
+        (record) =>
+          record.eventType === "click" &&
+          record.context.startsWith("button · "),
+      ) &&
+      results.records.length < initialResults.records.length,
+    "Поиск Firefox не оставил только обработчики click на button",
+  );
+  assert.ok(
+    filteredResults.records.some(
+      (record) =>
+        record.metadata["Документ (documentId)"] === buttonRecord.documentId &&
+        record.metadata["Фрейм (frameId)"] === "0",
+    ),
+    "Поиск Firefox потерял обработчик кнопки основной страницы",
+  );
+
+  await searchPopup("несуществующий-обработчик-2026");
+  await poll(
+    popupResults,
+    (results) =>
+      results?.records.length === 0 &&
+      results.text.includes("По запросу ничего не найдено."),
+    "Firefox не показал пустой результат поиска",
+  );
+  await api(`const popup = browser.extension.getViews({type: 'popup'})[0];
+    const reset = [...popup.document.querySelectorAll('button')]
+      .find(button => button.textContent.trim() === 'Сбросить поиск');
+    if (!reset) throw new Error('Кнопка сброса поиска недоступна');
+    reset.click();`);
+  const restoredResults = await poll(
+    popupResults,
+    (results) =>
+      results?.search?.value === "" &&
+      results.records.length === initialResults.records.length,
+    "Firefox не восстановил карточки после сброса поиска",
+  );
+  assert.deepEqual(restoredResults.groups, initialResults.groups);
+  assert.equal(restoredResults.count, initialResults.count);
+  await api(
+    `const popup = browser.extension.getViews({type: 'popup'})[0];
+    const record = [...popup.document.querySelectorAll('details.listener-record')]
+      .find(record => record.querySelector('.record-context')?.textContent.trim() === arguments[0]);
+    if (!record) throw new Error('Карточка обработчика основной страницы недоступна');
+    record.querySelector('summary').click();`,
+    [`button · frame 0 · document ${buttonRecord.documentId}`],
+  );
+  const expandedResults = await poll(
+    popupResults,
+    (results) =>
+      results?.records.some(
+        (record) =>
+          record.open &&
+          record.metadata["Документ (documentId)"] ===
+            buttonRecord.documentId &&
+          record.metadata["Путь (path)"] === "button",
+      ),
+    "Firefox не раскрыл стандартную карточку details",
+  );
+  const expandedRecord = expandedResults.records.find(
+    (record) =>
+      record.open &&
+      record.metadata["Документ (documentId)"] === buttonRecord.documentId &&
+      record.metadata["Путь (path)"] === "button",
+  );
+  assert.equal(expandedRecord.metadata["Фрейм (frameId)"], "0");
+  assert.equal(
+    expandedRecord.metadata["Источник (sourceKind)"],
+    buttonRecord.source.sourceKind ?? "Неизвестно",
+  );
+  assert.equal(expandedRecord.metadata.capture, "false");
+  assert.equal(expandedRecord.metadata.passive, "Неизвестно");
+  assert.equal(expandedRecord.metadata.once, "Неизвестно");
   console.debug(
     JSON.stringify({
       scope: "firefox-extension",
@@ -286,6 +427,11 @@ try {
   assert.deepEqual(await origins(), []);
   assert.equal((await snapshot(secondFixture.id)).records.length, 0);
   await poll(
+    popupResults,
+    (results) => results && !results.search && results.records.length === 0,
+    "Firefox оставил поиск или карточки после отзыва доступа",
+  );
+  await poll(
     scripts,
     (value) => value.length === 0,
     "Firefox kept a revoked registration",
@@ -297,7 +443,7 @@ try {
     JSON.stringify({
       scope: "firefox-extension",
       message:
-        "PASS: temporary add-on; native deny/allow; activeTab isolation; exact host and frames; real collection; update; external revoke; regrant; two-tab revoke",
+        "PASS: temporary add-on; native deny/allow; activeTab isolation; exact host and frames; real collection; поиск и карточки настоящего popup; update; external revoke; regrant; two-tab revoke",
       nativePermissionPrompt: "verified",
     }),
   );
