@@ -2,8 +2,15 @@ import { chromium, expect, test } from "@playwright/test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type browser from "webextension-polyfill";
+import type { SiteAccessSnapshot } from "../../src/shared/contracts/site-access";
 
-test("T-RELEASE-001 captures fixture registrations in the Chromium extension popup", async () => {
+type ExtensionWindow = Window & { chrome: typeof browser };
+
+test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium", async ({
+  baseURL,
+}) => {
+  test.setTimeout(60_000);
   const extensionPath = path.resolve(".output/chrome-mv3");
   const profilePath = await mkdtemp(
     path.join(tmpdir(), "listener-lens-chromium-"),
@@ -16,36 +23,233 @@ test("T-RELEASE-001 captures fixture registrations in the Chromium extension pop
       `--load-extension=${extensionPath}`,
     ],
   });
-
   try {
-    const serviceWorker =
+    const worker =
       context.serviceWorkers()[0] ??
       (await context.waitForEvent("serviceworker"));
-    const extensionId = new URL(serviceWorker.url()).host;
-    console.debug(
-      JSON.stringify({
-        level: "DEBUG",
-        scope: "chromium-extension-smoke",
-        message: "extension service worker ready",
-        browser: "chromium",
-        entrypoint: "background",
-      }),
-    );
-
-    const fixturePage = await context.newPage();
-    await fixturePage.goto("/basic.html");
-    await expect(fixturePage.locator("body")).toHaveAttribute(
-      "data-fixture-ready",
+    const extensionId = new URL(worker.url()).host;
+    const control = await context.newPage();
+    await control.goto(`chrome-extension://${extensionId}/popup.html`);
+    const fixture = await context.newPage();
+    const fixtureUrl = new URL("/site-access.html", baseURL).href;
+    await fixture.goto(fixtureUrl);
+    await expect(fixture.locator("body")).toHaveAttribute(
+      "data-listeners-ready",
       "true",
     );
-    await fixturePage.evaluate(() => {
-      window.addEventListener("click", () => undefined);
-    });
+    expect(
+      await control.evaluate(
+        async () =>
+          (
+            await (
+              window as unknown as ExtensionWindow
+            ).chrome.permissions.getAll()
+          ).origins,
+      ),
+    ).toEqual([]);
+    expect(
+      await control.evaluate(() =>
+        (
+          window as unknown as ExtensionWindow
+        ).chrome.scripting.getRegisteredContentScripts(),
+      ),
+    ).toEqual([]);
 
-    const popupPage = await context.newPage();
-    await popupPage.goto(`chrome-extension://${extensionId}/popup.html`);
-    await expect(popupPage.getByText("Статус: ready")).toBeVisible();
-    await expect(popupPage.getByText("События не найдены.")).toBeVisible();
+    // Настройка настоящего grant через Chromium test profile; нативный диалог
+    // Chrome остаётся отдельным ручным gate. Production APIs не подменяем.
+    const settings = await context.newPage();
+    await settings.goto("chrome://extensions/");
+    const pattern = "http://localhost/*";
+    await settings.evaluate(
+      ({ id, origin }) =>
+        new Promise<void>((resolve, reject) => {
+          const api = (
+            window as unknown as {
+              chrome: {
+                runtime: { lastError?: { message?: string } };
+                developerPrivate: {
+                  addHostPermission(
+                    id: string,
+                    origin: string,
+                    callback: () => void,
+                  ): void;
+                };
+              };
+            }
+          ).chrome;
+          api.developerPrivate.addHostPermission(id, origin, () => {
+            if (api.runtime.lastError)
+              reject(new Error(api.runtime.lastError.message));
+            else resolve();
+          });
+        }),
+      { id: extensionId, origin: pattern },
+    );
+    await settings.close();
+    await control.bringToFront();
+    await control.evaluate((origin) => {
+      const button = document.createElement("button");
+      button.id = "test-grant";
+      button.textContent = "Подтвердить тестовое разрешение";
+      button.onclick = () => {
+        void (window as unknown as ExtensionWindow).chrome.permissions
+          .request({ origins: [origin] })
+          .then((granted) => {
+            document.body.dataset.testGrant = String(granted);
+          });
+      };
+      document.body.append(button);
+    }, pattern);
+    await control.locator("#test-grant").click();
+    await expect(control.locator("body")).toHaveAttribute(
+      "data-test-grant",
+      "true",
+    );
+    expect(
+      await control.evaluate(
+        async () =>
+          (
+            await (
+              window as unknown as ExtensionWindow
+            ).chrome.permissions.getAll()
+          ).origins,
+      ),
+    ).toEqual([pattern]);
+    await fixture.bringToFront();
+    const tabId = await control.evaluate(
+      async () =>
+        (
+          await (window as unknown as ExtensionWindow).chrome.tabs.query({
+            active: true,
+            currentWindow: true,
+          })
+        )[0]!.id!,
+    );
+
+    // action.openPopup создаёт настоящий extension popup, поэтому sender.tab
+    // отсутствует. Страница popup.html в обычной вкладке такого sender не даёт.
+    await worker.evaluate(() =>
+      (globalThis as unknown as ExtensionWindow).chrome.action.openPopup(),
+    );
+    const popupText = () =>
+      control.evaluate(() => {
+        const popup = (
+          window as unknown as ExtensionWindow
+        ).chrome.extension.getViews({
+          type: "popup",
+        })[0];
+        return popup?.document.body.innerText ?? "";
+      });
+    const snapshot = (id = tabId) =>
+      control.evaluate(async (targetId) => {
+        const popup = (
+          window as unknown as ExtensionWindow
+        ).chrome.extension.getViews({
+          type: "popup",
+        })[0] as ExtensionWindow;
+        return popup.chrome.runtime.sendMessage({
+          type: "get-site-access",
+          tabId: targetId,
+        }) as Promise<SiteAccessSnapshot>;
+      }, id);
+    const clickPopup = (label: string) =>
+      control.evaluate((text) => {
+        const popup = (
+          window as unknown as ExtensionWindow
+        ).chrome.extension.getViews({
+          type: "popup",
+        })[0];
+        const button = Array.from(
+          popup?.document.querySelectorAll("button") ?? [],
+        ).find((element) => element.textContent?.trim() === text);
+        if (!button) throw new Error(`Кнопка popup отсутствует: ${text}`);
+        button.click();
+      }, label);
+    await expect.poll(popupText).toContain("Перезагрузить вкладку");
+    await clickPopup("Перезагрузить вкладку");
+    await expect
+      .poll(async () =>
+        (await snapshot()).records.some(
+          (record) => record.eventType === "click" && record.frameId === 0,
+        ),
+      )
+      .toBe(true);
+    expect((await snapshot()).status).toBe("limited");
+
+    const otherUrl = new URL(fixtureUrl);
+    otherUrl.hostname = "127.0.0.1";
+    const otherId = await control.evaluate(
+      async (url) =>
+        (
+          await (window as unknown as ExtensionWindow).chrome.tabs.create({
+            url,
+            active: false,
+          })
+        ).id!,
+      otherUrl.href,
+    );
+    const other = await snapshot(otherId);
+    expect(other.records).toEqual([]);
+    const registrations = await control.evaluate(() =>
+      (
+        window as unknown as ExtensionWindow
+      ).chrome.scripting.getRegisteredContentScripts(),
+    );
+    expect(registrations).toHaveLength(1);
+    expect(registrations[0]!.matches).toEqual([pattern]);
+    const secondId = await control.evaluate(
+      async (url) =>
+        (
+          await (window as unknown as ExtensionWindow).chrome.tabs.create({
+            url,
+            active: false,
+          })
+        ).id!,
+      fixtureUrl,
+    );
+    await expect
+      .poll(async () =>
+        (await snapshot(secondId)).records.some(
+          (record) => record.eventType === "click",
+        ),
+      )
+      .toBe(true);
+
+    await expect.poll(popupText).toContain("Отозвать доступ");
+    await clickPopup("Отозвать доступ");
+    await expect.poll(async () => (await snapshot()).records.length).toBe(0);
+    expect((await snapshot(secondId)).records).toEqual([]);
+    expect(
+      await control.evaluate(
+        async () =>
+          (
+            await (
+              window as unknown as ExtensionWindow
+            ).chrome.permissions.getAll()
+          ).origins,
+      ),
+    ).toEqual([]);
+    await expect
+      .poll(() =>
+        control.evaluate(() =>
+          (
+            window as unknown as ExtensionWindow
+          ).chrome.scripting.getRegisteredContentScripts(),
+        ),
+      )
+      .toEqual([]);
+    await fixture.evaluate(() =>
+      window.addEventListener("listener-lens-after-revoke", () => {}),
+    );
+    expect((await snapshot()).records).toEqual([]);
+    console.debug(
+      JSON.stringify({
+        scope: "chromium-extension",
+        message:
+          "PASS: real popup; exact grant; real listeners; two tabs; host isolation; revoke",
+        nativePermissionPrompt: "manual-required",
+      }),
+    );
   } finally {
     await context.close();
     await rm(profilePath, { recursive: true, force: true });

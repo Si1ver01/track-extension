@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Проверка разрешения сайта</title>
+  </head>
+  <body data-fixture-ready="true">
+    <button id="site-click" type="button">Проверить обработчик</button>
+    <script>
+      setTimeout(() => {
+        document
+          .querySelector("#site-click")
+          .addEventListener("click", () => {});
+        window.addEventListener("click", () => {});
+        document.body.dataset.listenersReady = "true";
+      }, 500);
+      const sameSite = document.createElement("iframe");
+      sameSite.title = "Разрешённый фрейм";
+      sameSite.src = "/context-frame.html";
+      document.body.append(sameSite);
+      const anotherSite = document.createElement("iframe");
+      anotherSite.title = "Другой сайт";
+      const anotherUrl = new URL("/context-frame.html", location.href);
+      anotherUrl.hostname =
+        location.hostname === "localhost" ? "127.0.0.1" : "localhost";
+      anotherSite.src = anotherUrl.href;
+      document.body.append(anotherSite);
+    </script>
+  </body>
+</html>

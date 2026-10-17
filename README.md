@@ -2,21 +2,21 @@
 
 ## TL;DR
 
-Технический прототип browser extension фиксирует метаданные регистрации поддерживаемых DOM-событий и показывает их в popup. Пользовательские payloads, значения полей, clipboard content и callback body не собираются.
+Listener Lens показывает зарегистрированные обработчики DOM-событий в Chrome и Firefox. Доступ включаем отдельно для выбранного сайта; после разрешения перезагружаем вкладку. Значения полей, содержимое clipboard и код callback не собираем.
 
 ## Features
 
-- `document_start` content script и best-effort listener hook.
-- Локальный каталог описаний событий.
-- Типизированная нормализация listener records.
-- In-memory state с группировкой по вкладке и frame.
-- Popup-first UI со статусом сканирования и списком событий.
-- Manifest V3 metadata для Chromium и Firefox.
+- Выдача и отзыв доступа к выбранному сайту из popup.
+- Динамический content script на `document_start` и best-effort listener hook.
+- Метаданные обработчиков с локальными описаниями событий.
+- Разделение записей по вкладке, frame и документу.
+- Отдельные состояния доступа, перезагрузки, запуска сборщика и результата.
+- Локальное состояние с ограничением числа записей; без истории и сетевой передачи.
 
 ## Installation
 
 ```bash
-pnpm install
+pnpm install --frozen-lockfile
 pnpm playwright:install
 pnpm dev
 ```
@@ -24,20 +24,20 @@ pnpm dev
 ## Usage
 
 ```bash
-pnpm format:check
-pnpm lint
-pnpm typecheck
-pnpm test:unit
-pnpm build
-pnpm verify:build
+pnpm dev
 ```
 
-Подробный сценарий сборки и проверки описан в [`docs/technical-prototype.md`](docs/technical-prototype.md).
+Открываем HTTP/HTTPS-страницу и popup, нажимаем «Разрешить для этого сайта», подтверждаем запрос браузера и нажимаем «Перезагрузить вкладку». Чтобы прекратить сбор, выбираем «Отозвать доступ».
+
+| Документ                                         | Содержание                                                 |
+| ------------------------------------------------ | ---------------------------------------------------------- |
+| [Сборка и проверки](docs/technical-prototype.md) | Команды и матрица поддерживаемых контекстов                |
+| [Доступ к сайту](docs/site-access.md)            | Разрешения, состояния popup, ограничения и ручная проверка |
 
 ## Architecture / Stack
 
-Проект использует `WXT`, `React`, `TypeScript`, Manifest V3 и `webextension-polyfill`. Content script передаёт records через bridge в background service worker. Service worker хранит ограниченное состояние текущих вкладок и отдаёт его popup через `browser.runtime`.
+Используем `WXT`, `React`, `TypeScript`, Manifest V3 и `webextension-polyfill`. Background согласовывает выданные host permissions с динамическими регистрациями content script. Bridge в контексте страницы фиксирует metadata; content script передаёт их в background после проверки доступа и сессии документа. Popup получает подтверждённый снимок состояния.
 
 ## Ограничения
 
-Hook регистрируется best-effort. Скрипты, выполнившиеся раньше hook, browser-protected URLs и изолированные cross-origin/frame contexts могут быть недоступны. Сетевой запрос для описания событий не выполняется.
+Hook работает best effort: регистрации до его установки могут быть невидимы. Защищённые страницы браузера недоступны; междоменные iframe требуют собственного разрешения. После перезапуска background и возврата документа с остановленным сборщиком из BFCache нужна перезагрузка: прежние записи не восстанавливаются.

@@ -28,7 +28,7 @@ const server = createServer((request, response) => {
 
 server.on("error", (error) => {
   if (error.code !== "EADDRINUSE" || requestedPort !== 4173) throw error;
-  server.listen(0, "localhost", () => {
+  server.listen(0, () => {
     const address = server.address();
     console.warn(
       JSON.stringify({
@@ -41,7 +41,7 @@ server.on("error", (error) => {
     );
   });
 });
-server.listen(requestedPort, "localhost", () => {
+server.listen(requestedPort, () => {
   const address = server.address();
   console.debug(
     JSON.stringify({
