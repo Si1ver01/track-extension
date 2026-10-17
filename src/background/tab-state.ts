@@ -10,7 +10,7 @@ const maxRecords = 200;
 const states = new Map<number, TabState>();
 
 export function getTabState(tabId: number): TabState {
-  return states.get(tabId) ?? { tabId, records: [], status: "ready" };
+  return states.get(tabId) ?? { tabId, records: [], status: "scanning" };
 }
 export function addRecord(record: ListenerRecord): TabState {
   const state = getTabState(record.tabId);

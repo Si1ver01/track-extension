@@ -73,20 +73,42 @@ for (const target of targets) {
     "optional HTTPS origin access is missing",
   );
   requireCondition(
-    contentScripts.some((entry) => entry.run_at === "document_start"),
+    !(manifest.host_permissions ?? []).length,
     target.browser,
-    "document_start content script is missing",
+    "required host permissions are not allowed",
   );
   requireCondition(
-    contentScripts.some((entry) => entry.all_frames === true),
+    !contentScripts.some((entry) =>
+      (entry.matches ?? []).some(
+        (match) =>
+          match === "<all_urls>" ||
+          match === "http://*/*" ||
+          match === "https://*/*",
+      ),
+    ),
     target.browser,
-    "all_frames content script is missing",
+    "static content scripts must not match every site",
   );
   requireCondition(
-    contentScripts.some((entry) => entry.match_about_blank === true),
+    (manifest.web_accessible_resources ?? []).some((entry) =>
+      entry.resources?.includes("bridge.js"),
+    ),
     target.browser,
-    "match_about_blank content script is missing",
+    "bridge.js web accessible resource is missing",
   );
+  requireCondition(
+    !("all_frames" in manifest) && !("match_about_blank" in manifest),
+    target.browser,
+    "invalid root content-script keys",
+  );
+  for (const asset of ["collector.js", "bridge.js"]) {
+    requireCondition(
+      (await readFile(path.resolve(target.directory, asset), "utf8")).length >
+        0,
+      target.browser,
+      `${asset} is missing`,
+    );
+  }
 
   if (target.browser === "firefox") {
     const gecko = manifest.browser_specific_settings?.gecko;

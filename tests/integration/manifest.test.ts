@@ -29,13 +29,16 @@ describe("cross-browser manifest metadata", () => {
   });
 
   it.each(["chrome", "firefox"] as const)(
-    "injects into every frame for %s",
+    "exposes only the bridge and leaves collector registration dynamic for %s",
     (browser) => {
       const manifest = createManifest(browser);
-      expect(manifest).toMatchObject({
-        all_frames: true,
-        match_about_blank: true,
-      });
+      expect(manifest).not.toHaveProperty("all_frames");
+      expect(manifest).not.toHaveProperty("match_about_blank");
+      expect(manifest).not.toHaveProperty("content_scripts");
+      expect(manifest).not.toHaveProperty("host_permissions");
+      expect(manifest.web_accessible_resources).toEqual([
+        { resources: ["bridge.js"], matches: ["http://*/*", "https://*/*"] },
+      ]);
     },
   );
 });

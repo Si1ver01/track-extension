@@ -10,11 +10,12 @@ export function createManifest(browser: BuildBrowser) {
           browser_specific_settings: {
             gecko: {
               id: "listener-lens@example.invalid",
+              strict_min_version: "128.0",
               data_collection_permissions: { required: ["none"] },
             },
           },
         }
-      : {};
+      : { minimum_chrome_version: "119" };
 
   return {
     name: "Listener Lens",
@@ -22,8 +23,9 @@ export function createManifest(browser: BuildBrowser) {
       "Inspect registered browser listeners without collecting user payloads.",
     permissions: [...permissions],
     optional_host_permissions: [...optionalHostPermissions],
-    all_frames: true,
-    match_about_blank: true,
+    web_accessible_resources: [
+      { resources: ["bridge.js"], matches: [...optionalHostPermissions] },
+    ],
     ...firefoxMetadata,
   };
 }

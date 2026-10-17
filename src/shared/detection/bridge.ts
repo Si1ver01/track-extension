@@ -8,6 +8,7 @@ import type {
 import { createListenerKey, ListenerRegistry } from "./registry";
 import { scanInlineSurface } from "./surfaces";
 import { createLogger } from "../logger";
+import { createId } from "../id";
 
 const logger = createLogger("detection.bridge");
 
@@ -69,8 +70,10 @@ export function installListenerHook(
   nonce = "",
   contextDocumentId = "",
 ): () => void {
+  let active = true;
   const original = EventTarget.prototype.addEventListener;
   const originalRemove = EventTarget.prototype.removeEventListener;
+  const removeWindowListener = window.removeEventListener.bind(window);
   const registry = new ListenerRegistry();
   const listenerKeys = new WeakMap<object, string>();
   const keyFor = (listener: EventListenerOrEventListenerObject) => {
@@ -98,9 +101,10 @@ export function installListenerHook(
     };
   };
   const targetIds = new WeakMap<object, string>();
-  const documentId = contextDocumentId || crypto.randomUUID();
-  const navigationId = crypto.randomUUID();
+  const documentId = contextDocumentId || createId();
+  const navigationId = createId();
   const emitNavigation = (navigationKind: "spa" | "full") => {
+    if (!active) return;
     window.postMessage(
       {
         source: "listener-lens",
@@ -142,7 +146,7 @@ export function installListenerHook(
     const object = target as object;
     const existing = targetIds.get(object);
     if (existing) return existing;
-    const id = `target-${crypto.randomUUID()}`;
+    const id = `target-${createId()}`;
     targetIds.set(object, id);
     return id;
   };
@@ -165,6 +169,7 @@ export function installListenerHook(
     return { path: "unknown", target: "unknown", targetId: id };
   };
   EventTarget.prototype.addEventListener = function (type, listener, options) {
+    if (!active) return original.call(this, type, listener, options);
     const eventType = String(type);
     const listenerKey = keyFor(listener ?? (() => undefined));
     const listenerOptions = optionsFor(options);
@@ -250,6 +255,7 @@ export function installListenerHook(
     eventType: string,
     sourceKind: "event-handler-property" | "inline-attribute",
   ) => {
+    if (!active) return;
     const info = targetInfo(target);
     const message = createBridgeMessage(
       eventType,
@@ -300,7 +306,7 @@ export function installListenerHook(
   }
   Element.prototype.setAttribute = function (name, value) {
     const result = originalSetAttribute.call(this, name, value);
-    if (name.toLowerCase().startsWith("on")) scanElement(this);
+    if (active && name.toLowerCase().startsWith("on")) scanElement(this);
     return result;
   };
   EventTarget.prototype.removeEventListener = function (
@@ -308,6 +314,7 @@ export function installListenerHook(
     listener,
     options,
   ) {
+    if (!active) return originalRemove.call(this, type, listener, options);
     const eventType = String(type);
     const listenerKey = keyFor(listener ?? (() => undefined));
     const listenerOptions = optionsFor(options);
@@ -334,22 +341,48 @@ export function installListenerHook(
   const originalAttachShadow = Element.prototype.attachShadow;
   Element.prototype.attachShadow = function (init: ShadowRootInit) {
     const root = originalAttachShadow.call(this, init);
-    logger.debug("shadow root observed", {
-      mode: init.mode,
-      documentId,
-      targetId: targetId(root),
-    });
+    if (active)
+      logger.debug("shadow root observed", {
+        mode: init.mode,
+        documentId,
+        targetId: targetId(root),
+      });
     return root;
   };
+  const installedAdd = EventTarget.prototype.addEventListener;
+  const installedRemove = EventTarget.prototype.removeEventListener;
+  const installedAttribute = Element.prototype.setAttribute;
+  const installedShadow = Element.prototype.attachShadow;
+  const installedPush = history.pushState;
+  const installedReplace = history.replaceState;
+  const installedHandlers = new Map(
+    [...handlerDescriptors.keys()].map((property) => [
+      property,
+      Object.getOwnPropertyDescriptor(EventTarget.prototype, property)?.set,
+    ]),
+  );
   return () => {
-    EventTarget.prototype.addEventListener = original;
-    EventTarget.prototype.removeEventListener = originalRemove;
-    Element.prototype.setAttribute = originalSetAttribute;
-    Element.prototype.attachShadow = originalAttachShadow;
-    history.pushState = originalPushState;
-    history.replaceState = originalReplaceState;
-    window.removeEventListener("popstate", onPopState);
-    for (const [property, descriptor] of handlerDescriptors)
-      Object.defineProperty(EventTarget.prototype, property, descriptor);
+    if (!active) return;
+    active = false;
+    if (EventTarget.prototype.addEventListener === installedAdd)
+      EventTarget.prototype.addEventListener = original;
+    if (EventTarget.prototype.removeEventListener === installedRemove)
+      EventTarget.prototype.removeEventListener = originalRemove;
+    if (Element.prototype.setAttribute === installedAttribute)
+      Element.prototype.setAttribute = originalSetAttribute;
+    if (Element.prototype.attachShadow === installedShadow)
+      Element.prototype.attachShadow = originalAttachShadow;
+    if (history.pushState === installedPush)
+      history.pushState = originalPushState;
+    if (history.replaceState === installedReplace)
+      history.replaceState = originalReplaceState;
+    removeWindowListener("popstate", onPopState);
+    for (const [property, descriptor] of handlerDescriptors) {
+      if (
+        Object.getOwnPropertyDescriptor(EventTarget.prototype, property)
+          ?.set === installedHandlers.get(property)
+      )
+        Object.defineProperty(EventTarget.prototype, property, descriptor);
+    }
   };
 }

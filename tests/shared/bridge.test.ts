@@ -1,8 +1,47 @@
 import { describe, expect, it, vi } from "vitest";
-import { createBridgeMessage } from "../../src/shared/detection/bridge";
+import {
+  createBridgeMessage,
+  installListenerHook,
+} from "../../src/shared/detection/bridge";
 import { initializeBridgeHandshake } from "../../src/shared/detection/handshake";
 
 describe("bridge messages", () => {
+  it("disposes its own patches idempotently", () => {
+    const add = EventTarget.prototype.addEventListener;
+    const push = history.pushState;
+    const dispose = installListenerHook(0, "test", "document-test");
+    expect(EventTarget.prototype.addEventListener).not.toBe(add);
+    dispose();
+    dispose();
+    expect(EventTarget.prototype.addEventListener).toBe(add);
+    expect(history.pushState).toBe(push);
+  });
+  it("preserves a later page patch while disabling its retained wrapper", () => {
+    const original = EventTarget.prototype.addEventListener;
+    const dispose = installListenerHook(0, "test", "document-test");
+    const installed = EventTarget.prototype.addEventListener;
+    const foreign: typeof original = function (
+      this: EventTarget,
+      type,
+      listener,
+      options,
+    ) {
+      return installed.call(this, type, listener, options);
+    };
+    const post = vi.spyOn(window, "postMessage");
+    try {
+      EventTarget.prototype.addEventListener = foreign;
+      dispose();
+      expect(EventTarget.prototype.addEventListener).toBe(foreign);
+      const count = post.mock.calls.length;
+      new EventTarget().addEventListener("click", () => undefined);
+      expect(post).toHaveBeenCalledTimes(count);
+    } finally {
+      dispose();
+      EventTarget.prototype.addEventListener = original;
+      post.mockRestore();
+    }
+  });
   it("includes the handshake nonce and metadata context", () => {
     const message = createBridgeMessage("click", 0, "button", "nonce-1");
     expect(message).toMatchObject({

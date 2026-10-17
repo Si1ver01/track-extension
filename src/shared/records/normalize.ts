@@ -1,4 +1,5 @@
 import { createLogger } from "../logger";
+import { createId } from "../id";
 import { describeEvent } from "../event-catalog/catalog";
 import type {
   ListenerOptions,
@@ -35,7 +36,7 @@ export function normalizeRecord(
   const documentId = input.documentId || "legacy-document";
   const contextKind = input.contextKind ?? "document";
   const record: ListenerRecord = {
-    id: input.id ?? crypto.randomUUID(),
+    id: input.id ?? createId(),
     eventType: input.eventType || "unknown",
     description: describeEvent(input.eventType || "unknown"),
     tabId: input.tabId,
@@ -69,6 +70,7 @@ function sanitizeSource(source: SourceMetadata): SourceMetadata {
     path: source.path || "unknown",
     options: source.options,
     scriptLocation: source.scriptLocation,
+    sourceKind: source.sourceKind,
   };
   for (const forbidden of ["value", "payload", "data", "callbackBody"]) {
     if (forbidden in source)

@@ -1,5 +1,6 @@
 import type { ListenerLifecycle, ListenerRecord } from "../contracts/records";
 import { createLogger } from "../logger";
+import { createId } from "../id";
 
 const logger = createLogger("detection.registry");
 const DEFAULT_MAX_RECORDS = 2000;
@@ -117,7 +118,7 @@ export function createListenerKey(
 const listenerIdentity = new WeakMap<object, string>();
 
 function registerListenerIdentity(listener: object): string {
-  const key = `listener-${crypto.randomUUID()}`;
+  const key = `listener-${createId()}`;
   listenerIdentity.set(listener, key);
   return key;
 }

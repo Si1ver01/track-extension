@@ -54,6 +54,7 @@ export interface ListenerMessage {
     | "listener-record"
     | "scan-status"
     | "get-tab-state"
+    | "collector-ready"
     | "context-navigation"
     | "context-reset";
   record?: ListenerRecord;
