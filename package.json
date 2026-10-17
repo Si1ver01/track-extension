@@ -19,6 +19,7 @@
     "test": "pnpm run test:unit",
     "test:e2e": "pnpm run test:e2e:chromium && pnpm run test:e2e:firefox",
     "test:e2e:chromium": "pnpm run build:chrome && playwright test --project=chromium-extension",
+    "test:e2e:chromium:native": "pnpm run build:chrome && node tests/e2e/chrome-native-check.mjs",
     "test:e2e:firefox": "pnpm run build:firefox && node tests/e2e/firefox-extension.mjs",
     "test:integration": "vitest run tests/integration",
     "test:smoke:firefox": "pnpm run build:firefox && playwright test --project=firefox-smoke",
