@@ -338,6 +338,137 @@ try {
   assert.equal(expandedRecord.metadata.capture, "false");
   assert.equal(expandedRecord.metadata.passive, "Неизвестно");
   assert.equal(expandedRecord.metadata.once, "Неизвестно");
+
+  // MAIN регистрирует настоящие listeners; события и их payload не отправляем.
+  const newEventTypes = [
+    "mousedown",
+    "dblclick",
+    "pointerdown",
+    "focusin",
+    "wheel",
+    "scroll",
+    "beforeinput",
+    "reset",
+    "invalid",
+  ];
+  await api(
+    `return browser.scripting.executeScript({
+      target: {tabId: arguments[0], frameIds: [0]}, world: 'MAIN',
+      args: [arguments[1]],
+      func: (eventTypes) => {
+        const target = document.createElement('input');
+        target.id = 'listener-catalog-probe';
+        target.value = 'listener-catalog-private-input';
+        document.body.append(target);
+        const listener = () => {
+          const callbackPayload = 'listener-catalog-callback-content';
+          void callbackPayload;
+        };
+        window.__listenerLensCatalogProbe = {target, listener};
+        for (const eventType of eventTypes) {
+          target.addEventListener(eventType, listener, {
+            capture: true, passive: false, once: false
+          });
+        }
+      }
+    });`,
+    [fixture.id, newEventTypes],
+  );
+  const expandedCatalogState = await poll(
+    () => snapshot(fixture.id),
+    (state) =>
+      newEventTypes.every((eventType) =>
+        state.records.some(
+          (record) =>
+            record.eventType === eventType &&
+            record.frameId === 0 &&
+            record.source.path === "input" &&
+            record.lifecycle === "active",
+        ),
+      ),
+    "Firefox не передал регистрации новых семейств через background",
+  );
+  const newRecords = expandedCatalogState.records.filter(
+    (record) =>
+      newEventTypes.includes(record.eventType) &&
+      record.frameId === 0 &&
+      record.source.path === "input",
+  );
+  assert.equal(newRecords.length, newEventTypes.length);
+  for (const record of newRecords) {
+    assert.equal(record.documentId, expandedCatalogState.documentId);
+    assert.equal(record.source.sourceKind, "add-event-listener");
+    assert.deepEqual(record.listenerOptions, {
+      capture: true,
+      passive: false,
+      once: false,
+    });
+    assert.match(record.description, /[А-Яа-яЁё]/);
+    assert.doesNotMatch(
+      record.description,
+      /Назначение этого типа события пока не описано/,
+    );
+    for (const field of ["value", "payload", "data", "callbackBody"]) {
+      assert.equal(Object.hasOwn(record, field), false);
+      assert.equal(Object.hasOwn(record.source, field), false);
+    }
+  }
+  assert.doesNotMatch(
+    JSON.stringify(expandedCatalogState.records),
+    /listener-catalog-private-input|listener-catalog-callback-content/,
+  );
+  const pointerRecord = newRecords.find(
+    (record) => record.eventType === "pointerdown",
+  );
+  await api(
+    `return browser.scripting.executeScript({
+      target: {tabId: arguments[0], frameIds: [0]}, world: 'MAIN',
+      func: () => {
+        const probe = window.__listenerLensCatalogProbe;
+        probe.target.removeEventListener('pointerdown', probe.listener, true);
+      }
+    });`,
+    [fixture.id],
+  );
+  await poll(
+    () => snapshot(fixture.id),
+    (state) =>
+      state.records.some(
+        (record) =>
+          record.id === pointerRecord.id &&
+          record.eventType === "pointerdown" &&
+          record.lifecycle === "removed",
+      ),
+    "Firefox не сохранил lifecycle removed для pointerdown",
+  );
+  await searchPopup("pointerdown removed");
+  const removedResults = await poll(
+    popupResults,
+    (results) =>
+      results?.records.length === 1 &&
+      results.records[0].eventType === "pointerdown" &&
+      results.records[0].metadata["Состояние (lifecycle)"] ===
+        "Удалён (removed)",
+    "Firefox не показал удалённый pointerdown в настоящем popup",
+  );
+  assert.deepEqual(removedResults.groups, ["pointerdown · 1"]);
+  await api(`const popup = browser.extension.getViews({type: 'popup'})[0];
+    [...popup.document.querySelectorAll('button')]
+      .find(button => button.textContent.trim() === 'Сбросить поиск').click();`);
+  await poll(
+    popupResults,
+    (results) => results?.search?.value === "",
+    "Firefox не сбросил поиск после проверки lifecycle",
+  );
+  console.debug(
+    JSON.stringify({
+      scope: "firefox-extension",
+      phase: "расширенный-каталог",
+      registeredCount: newRecords.length,
+      removedCount: 1,
+      privacy: "проверена",
+    }),
+  );
   console.debug(
     JSON.stringify({
       scope: "firefox-extension",

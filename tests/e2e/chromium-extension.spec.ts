@@ -6,6 +6,12 @@ import type browser from "webextension-polyfill";
 import type { SiteAccessSnapshot } from "../../src/shared/contracts/site-access";
 
 type ExtensionWindow = Window & { chrome: typeof browser };
+type CatalogProbeWindow = Window & {
+  __listenerLensCatalogProbe?: {
+    target: HTMLInputElement;
+    listener: EventListener;
+  };
+};
 
 test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium", async ({
   baseURL,
@@ -285,6 +291,117 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
     expect((await readResults()).text).toContain("Источник (sourceKind)");
     expect((await readResults()).text).toContain("capture");
     expect((await readResults()).fits).toBe(true);
+
+    // Регистрируем новые семейства в MAIN после установки настоящего hook.
+    const newEventTypes = [
+      "mousedown",
+      "dblclick",
+      "pointerdown",
+      "focusin",
+      "wheel",
+      "scroll",
+      "beforeinput",
+      "reset",
+      "invalid",
+    ];
+    await fixture.evaluate((eventTypes) => {
+      const target = document.createElement("input");
+      target.id = "listener-catalog-probe";
+      target.value = "listener-catalog-private-input";
+      document.body.append(target);
+      const listener: EventListener = () => {
+        const callbackPayload = "listener-catalog-callback-content";
+        void callbackPayload;
+      };
+      (window as CatalogProbeWindow).__listenerLensCatalogProbe = {
+        target,
+        listener,
+      };
+      for (const eventType of eventTypes) {
+        target.addEventListener(eventType, listener, {
+          capture: true,
+          passive: false,
+          once: false,
+        });
+      }
+    }, newEventTypes);
+    await expect
+      .poll(async () => {
+        const state = await snapshot();
+        return newEventTypes.every((eventType) =>
+          state.records.some(
+            (record) =>
+              record.eventType === eventType &&
+              record.frameId === 0 &&
+              record.source.path === "input" &&
+              record.lifecycle === "active",
+          ),
+        );
+      })
+      .toBe(true);
+    const expandedCatalogState = await snapshot();
+    const newRecords = expandedCatalogState.records.filter(
+      (record) =>
+        newEventTypes.includes(record.eventType) &&
+        record.frameId === 0 &&
+        record.source.path === "input",
+    );
+    expect(newRecords).toHaveLength(newEventTypes.length);
+    for (const record of newRecords) {
+      expect(record.documentId).toBe(expandedCatalogState.documentId);
+      expect(record.source.sourceKind).toBe("add-event-listener");
+      expect(record.listenerOptions).toEqual({
+        capture: true,
+        passive: false,
+        once: false,
+      });
+      expect(record.description).toMatch(/[А-Яа-яЁё]/);
+      expect(record.description).not.toContain(
+        "Назначение этого типа события пока не описано",
+      );
+      for (const field of ["value", "payload", "data", "callbackBody"]) {
+        expect(record).not.toHaveProperty(field);
+        expect(record.source).not.toHaveProperty(field);
+      }
+    }
+    expect(JSON.stringify(expandedCatalogState.records)).not.toMatch(
+      /listener-catalog-private-input|listener-catalog-callback-content/,
+    );
+    const pointerRecord = newRecords.find(
+      (record) => record.eventType === "pointerdown",
+    )!;
+    await fixture.evaluate(() => {
+      const probe = (window as CatalogProbeWindow).__listenerLensCatalogProbe!;
+      probe.target.removeEventListener("pointerdown", probe.listener, true);
+    });
+    await expect
+      .poll(async () =>
+        (await snapshot()).records.some(
+          (record) =>
+            record.id === pointerRecord.id &&
+            record.eventType === "pointerdown" &&
+            record.lifecycle === "removed",
+        ),
+      )
+      .toBe(true);
+    await setSearch("pointerdown removed");
+    await expect
+      .poll(async () => (await readResults()).groups)
+      .toEqual(["pointerdown · 1"]);
+    expect((await readResults()).cards[0]!.summary).toContain(
+      "Удалён (removed)",
+    );
+    await clickPopup("Сбросить поиск");
+    await expect.poll(async () => (await readResults()).query).toBe("");
+    console.debug(
+      JSON.stringify({
+        scope: "chromium-extension",
+        phase: "расширенный-каталог",
+        registeredCount: newRecords.length,
+        removedCount: 1,
+        privacy: "проверена",
+      }),
+    );
 
     const otherUrl = new URL(fixtureUrl);
     otherUrl.hostname = "127.0.0.1";
