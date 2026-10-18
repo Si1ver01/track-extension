@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import browser from "webextension-polyfill";
-import type { SiteAccessSnapshot } from "../../shared/contracts/site-access";
+import type {
+  SiteAccessSnapshot,
+  SiteCoverage,
+} from "../../shared/contracts/site-access";
 import { createLogger } from "../../shared/logger";
 import { getSiteScope } from "../../shared/site-access";
 
@@ -29,6 +32,23 @@ const statuses = new Set([
   "error",
 ]);
 
+function isCoverage(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!value || typeof value !== "object") return false;
+  const coverage = value as Partial<SiteCoverage>;
+  return (
+    Array.isArray(coverage.reasons) &&
+    coverage.reasons.length <= 2 &&
+    new Set(coverage.reasons).size === coverage.reasons.length &&
+    coverage.reasons.every(
+      (reason) =>
+        reason === "FRAME_PARTIAL" || reason === "RECORD_LIMIT_REACHED",
+    ) &&
+    Number.isSafeInteger(coverage.recordLimit) &&
+    (coverage.recordLimit ?? 0) > 0
+  );
+}
+
 function isSnapshot(
   value: unknown,
   tabId: number,
@@ -40,6 +60,7 @@ function isSnapshot(
     typeof candidate.status === "string" &&
     statuses.has(candidate.status) &&
     Array.isArray(candidate.records) &&
+    isCoverage(candidate.coverage) &&
     (candidate.documentId === undefined ||
       (typeof candidate.documentId === "string" &&
         candidate.documentId.length > 0)) &&
@@ -67,6 +88,7 @@ export function useSiteAccess() {
       tabId: next.tabId,
       status: next.status,
       recordCount: next.records.length,
+      coverageReasons: next.coverage?.reasons ?? [],
     });
   }, []);
 
@@ -196,7 +218,11 @@ export function useSiteAccess() {
 
   const reload = () => {
     const target = current.current;
-    if (!target?.site || target.status !== "reload-required" || action.current)
+    if (
+      !target?.site ||
+      (target.status !== "reload-required" && target.status !== "limited") ||
+      action.current
+    )
       return;
     action.current = "reload";
     const actionVersion = ++version.current;

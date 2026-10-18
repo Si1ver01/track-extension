@@ -143,6 +143,60 @@ beforeEach(() => {
 });
 
 describe("persistent site access", () => {
+  it("возвращает обе независимые причины и сохраняет overflow при обновлении", async () => {
+    const { controller } = fixture();
+    const session = await ready(controller);
+    for (let index = 0; index < 201; index++) {
+      const message = record(session.token);
+      message.record.id = `record-${index}`;
+      message.record.listenerKey = `listener-${index}`;
+      await controller.handleMessage(message, sender);
+    }
+    await controller.handleMessage(
+      { type: "collector-frames-changed", token: session.token, partial: true },
+      sender,
+    );
+    const limited = await controller.snapshot(10);
+    expect(limited.status).toBe("limited");
+    expect(limited.coverage).toEqual({
+      reasons: ["FRAME_PARTIAL", "RECORD_LIMIT_REACHED"],
+      recordLimit: 200,
+    });
+    const update = record(session.token);
+    update.record.id = "record-200";
+    update.record.listenerKey = "listener-200";
+    update.record.lifecycle = "removed";
+    await controller.handleMessage(update, sender);
+    await controller.handleMessage(
+      {
+        type: "collector-frames-changed",
+        token: session.token,
+        partial: false,
+      },
+      sender,
+    );
+    expect((await controller.snapshot(10)).coverage?.reasons).toEqual([
+      "RECORD_LIMIT_REACHED",
+    ]);
+    const revoked = await controller.handleMessage(
+      { type: "revoke-site", tabId: 10, pattern },
+      {},
+    );
+    expect(revoked).not.toHaveProperty("coverage");
+  });
+
+  it("возвращает понятную причину для неполного покрытия без записей", async () => {
+    const { controller } = fixture();
+    const session = await ready(controller);
+    await controller.handleMessage(
+      { type: "collector-frames-changed", token: session.token, partial: true },
+      sender,
+    );
+    expect(await controller.snapshot(10)).toMatchObject({
+      records: [],
+      coverage: { reasons: ["FRAME_PARTIAL"], recordLimit: 200 },
+    });
+  });
   it("ignores page transport commands without stopping an authenticated collector", async () => {
     const { controller } = fixture();
     const session = await ready(controller);

@@ -104,6 +104,83 @@ describe("popup site access", () => {
     vi.useRealTimers();
   });
 
+  it("показывает обе причины ограничения и перезапускает сбор отдельным действием", async () => {
+    browserMocks.sendMessage.mockResolvedValue({
+      ...snapshot("limited", [record]),
+      coverage: {
+        reasons: ["FRAME_PARTIAL", "RECORD_LIMIT_REACHED"],
+        recordLimit: 200,
+      },
+    });
+    render(<App />);
+    expect(
+      await screen.findByText(/Покрытие встроенных фреймов ограничено/),
+    ).toBeTruthy();
+    expect(screen.getByText(/Достигнут лимит сбора/).textContent).toContain(
+      "200",
+    );
+    expect(screen.getByText(/Обработчики, зарегистрированные до/)).toBeTruthy();
+    expect(screen.getByRole("searchbox")).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Перезагрузить вкладку" }),
+    );
+    await waitFor(() => expect(browserMocks.reload).toHaveBeenCalledWith(17));
+    expect(screen.queryByRole("searchbox")).toBeNull();
+    expect(screen.queryByLabelText("Покрытие сбора")).toBeNull();
+  });
+
+  it("оставляет общий fallback для limited без деталей и не подтверждает пустоту", async () => {
+    browserMocks.sendMessage.mockResolvedValue(snapshot("limited"));
+    render(<App />);
+    expect(
+      await screen.findByText(/Причина неполного результата недоступна/),
+    ).toBeTruthy();
+    expect(screen.getByText("Пока нет данных об обработчиках.")).toBeTruthy();
+    expect(screen.queryByText("Обработчики событий не найдены.")).toBeNull();
+  });
+
+  it.each([
+    { reasons: ["FRAME_PARTIAL", "FRAME_PARTIAL"], recordLimit: 200 },
+    { reasons: ["PRIVATE_PAGE_TEXT"], recordLimit: 200 },
+    { reasons: "FRAME_PARTIAL", recordLimit: 200 },
+    { reasons: ["RECORD_LIMIT_REACHED"], recordLimit: -1 },
+    { reasons: ["RECORD_LIMIT_REACHED"], recordLimit: Infinity },
+    null,
+  ])("отклоняет некорректные детали покрытия %#", async (coverage) => {
+    browserMocks.sendMessage.mockResolvedValue({
+      ...snapshot("limited", [record]),
+      coverage,
+    });
+    render(<App />);
+    expect(
+      await screen.findByText(/Не удалось получить состояние вкладки/),
+    ).toBeTruthy();
+    expect(screen.queryByRole("searchbox")).toBeNull();
+    expect(screen.queryByText(/PRIVATE_PAGE_TEXT/)).toBeNull();
+  });
+
+  it("не перезагружает другой сайт при действии из limited", async () => {
+    browserMocks.sendMessage
+      .mockResolvedValue({
+        ...snapshot("no-access"),
+        site: { pattern: "https://other.test/*", label: "https://other.test" },
+      })
+      .mockResolvedValueOnce({
+        ...snapshot("limited"),
+        coverage: { reasons: ["FRAME_PARTIAL"], recordLimit: 200 },
+      });
+    browserMocks.get.mockResolvedValue({ id: 17, url: "https://other.test/" });
+    render(<App />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Перезагрузить вкладку" }),
+    );
+    expect(await screen.findByText("https://other.test")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Разрешить для этого сайта" }),
+    ).toBeTruthy();
+    expect(browserMocks.reload).not.toHaveBeenCalled();
+  });
+
   it("shows loading and requests the active tab snapshot", async () => {
     const response = deferred<SiteAccessSnapshot>();
     browserMocks.sendMessage.mockReturnValue(response.promise);

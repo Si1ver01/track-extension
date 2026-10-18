@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useSiteAccess } from "./useSiteAccess";
 import { ResultsPanel } from "./ResultsPanel";
+import { CoverageNotice } from "./CoverageNotice";
 
 const statusMessages = {
   unsupported:
@@ -75,7 +76,7 @@ export function App() {
             Разрешить для этого сайта
           </button>
         )}
-        {status === "reload-required" && (
+        {(status === "reload-required" || status === "limited") && (
           <button type="button" disabled={Boolean(pending)} onClick={reload}>
             Перезагрузить вкладку
           </button>
@@ -98,6 +99,10 @@ export function App() {
       </div>
       {showRecords && snapshot && (
         <>
+          <CoverageNotice
+            coverage={snapshot.coverage}
+            limited={status === "limited"}
+          />
           <ResultsPanel
             key={JSON.stringify([
               snapshot.tabId,

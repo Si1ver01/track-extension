@@ -6,7 +6,7 @@ import type {
 import { createLogger } from "../shared/logger";
 
 const logger = createLogger("background.tab-state");
-const maxRecords = 200;
+export const MAX_TAB_RECORDS = 200;
 const states = new Map<number, TabState>();
 
 export function getTabState(tabId: number): TabState {
@@ -33,18 +33,24 @@ export function addRecord(record: ListenerRecord): TabState {
         entry.eventType,
       ].join("|") === identity,
   );
+  if (
+    (existingIndex < 0 && state.records.length >= MAX_TAB_RECORDS) ||
+    record.reasonCodes.includes("RECORD_LIMIT_REACHED")
+  )
+    state.recordLimitReached = true;
   if (existingIndex >= 0)
     state.records = state.records.map((entry, index) =>
       index === existingIndex ? record : entry,
     );
-  else state.records = [...state.records, record].slice(-maxRecords);
-  state.status = state.records.length >= maxRecords ? "limited" : "ready";
+  else state.records = [...state.records, record].slice(-MAX_TAB_RECORDS);
+  state.status = state.recordLimitReached ? "limited" : "ready";
   states.set(record.tabId, state);
   logger.debug("record added", {
     tabId: record.tabId,
     frameId: record.frameId,
     documentId: record.documentId,
     count: state.records.length,
+    recordLimitReached: Boolean(state.recordLimitReached),
   });
   return state;
 }

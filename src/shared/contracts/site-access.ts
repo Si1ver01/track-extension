@@ -14,6 +14,13 @@ export type SiteAccessStatus =
   | "limited"
   | "error";
 
+export type SiteCoverageReason = "FRAME_PARTIAL" | "RECORD_LIMIT_REACHED";
+
+export interface SiteCoverage {
+  reasons: SiteCoverageReason[];
+  recordLimit: number;
+}
+
 export interface SiteAccessSnapshot {
   tabId: number;
   site: SiteScope | null;
@@ -21,6 +28,7 @@ export interface SiteAccessSnapshot {
   records: ListenerRecord[];
   documentId?: string;
   reason?: string;
+  coverage?: SiteCoverage;
 }
 
 export type SiteAccessRequest =

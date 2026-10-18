@@ -108,6 +108,7 @@ export function isListenerMessage(value: unknown): value is ListenerMessage {
 export interface TabState {
   tabId: number;
   records: ListenerRecord[];
+  recordLimitReached?: boolean;
   status: "scanning" | "ready" | "limited" | "error";
   contexts?: Record<
     string,

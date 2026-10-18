@@ -2,6 +2,7 @@ import type browser from "webextension-polyfill";
 import { isListenerMessage } from "../shared/contracts/records";
 import type {
   SiteAccessSnapshot,
+  SiteCoverageReason,
   SiteScope,
 } from "../shared/contracts/site-access";
 import { getSiteScope, isExactSitePattern } from "../shared/site-access";
@@ -12,6 +13,7 @@ import { normalizeRecord } from "../shared/records/normalize";
 import type { ListenerReasonCode } from "../shared/contracts/records";
 import {
   addRecord,
+  MAX_TAB_RECORDS,
   getTabState,
   resetContext,
   resetTabState,
@@ -269,13 +271,26 @@ export class SiteAccessController {
         (session) =>
           session.tabId === tabId && (session.partial || session.failed),
       );
+      const reasons: SiteCoverageReason[] = [];
+      if (partial) reasons.push("FRAME_PARTIAL");
+      if (state.recordLimitReached) reasons.push("RECORD_LIMIT_REACHED");
+      logger.debug("coverage snapshot prepared", {
+        tabId,
+        reasons,
+        recordCount: state.records.length,
+      });
       return {
         tabId,
         site,
-        status: partial || state.status === "limited" ? "limited" : "ready",
+        status: reasons.length > 0 ? "limited" : "ready",
         records: state.records,
         documentId: main.documentId,
-        ...(partial ? { reason: "FRAME_PARTIAL" } : {}),
+        ...(reasons.length > 0
+          ? {
+              reason: reasons[0],
+              coverage: { reasons, recordLimit: MAX_TAB_RECORDS },
+            }
+          : {}),
       };
     } catch {
       return {
