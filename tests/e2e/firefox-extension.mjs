@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { createReadStream } from "node:fs";
 import { createServer } from "node:http";
 import path from "node:path";
-import { verifyDetectionCoverage } from "./detection-coverage.mjs";
+import {
+  verifyDetectionCoverage,
+  verifyRevokedBFCache,
+} from "./detection-coverage.mjs";
 import {
   extensionUuid,
   launchFirefoxExtension,
@@ -529,7 +532,7 @@ try {
     }),
   );
 
-  await verifyDetectionCoverage({
+  const coverageAdapter = {
     label: "firefox-extension",
     navigate: async (pathname) => {
       const url = new URL(pathname, fixtureUrl).href;
@@ -558,7 +561,43 @@ try {
     back: () => api("await browser.tabs.goBack(arguments[0]);", [fixture.id]),
     reload: () => api("await browser.tabs.reload(arguments[0]);", [fixture.id]),
     coverageText: async () => (await popupResults())?.text ?? "",
-  });
+    restartBackground: async () => {
+      await call("Marionette:SetContext", { value: "chrome" });
+      const stopped = await executeAsync(`
+        const { ExtensionParent } = ChromeUtils.importESModule("resource://gre/modules/ExtensionParent.sys.mjs");
+        const extension = ExtensionParent.GlobalManager.getExtension("listener-lens@example.invalid");
+        const views = () => [...extension.views].filter(view => view.viewType === "background").map(view => view.contextId);
+        const previous = views();
+        if (!previous.length) throw new Error("Работающий background context отсутствует");
+        if (typeof extension.terminateBackground === "function")
+          await extension.terminateBackground({ disableResetIdleForTest: true });
+        else if (typeof extension.backgroundContext?.shutdown === "function")
+          await extension.backgroundContext.shutdown(false);
+        else throw new Error("Background stop API отсутствует: " + JSON.stringify({state: extension.backgroundState, contextType: extension.backgroundContext?.constructor?.name}));
+        return { previous, remaining: views(), state: extension.backgroundState };
+      `);
+      assert.equal(stopped.state, "stopped");
+      assert.ok(
+        stopped.previous.every((id) => !stopped.remaining.includes(id)),
+      );
+      await call("Marionette:SetContext", { value: "content" });
+      return async () => {
+        await call("Marionette:SetContext", { value: "chrome" });
+        await poll(
+          () =>
+            execute(`
+          const { ExtensionParent } = ChromeUtils.importESModule("resource://gre/modules/ExtensionParent.sys.mjs");
+          const extension = ExtensionParent.GlobalManager.getExtension("listener-lens@example.invalid");
+          return [...extension.views].filter(view => view.viewType === "background").map(view => view.contextId);
+        `),
+          (ids) => ids.some((id) => !stopped.previous.includes(id)),
+          "Firefox не создал новый background context",
+        );
+        await call("Marionette:SetContext", { value: "content" });
+      };
+    },
+  };
+  await verifyDetectionCoverage(coverageAdapter);
 
   // Переустановка того же temporary add-on проходит через настоящий update lifecycle.
   await call("Addon:Install", {
@@ -633,12 +672,40 @@ try {
     "Firefox failed to collect in second tab after a second permission grant",
   );
 
-  const revoked = await message({
-    type: "revoke-site",
-    tabId: fixture.id,
-    pattern,
+  // После revoke executeScript больше недоступен. Страницей управляет сам
+  // WebDriver, поэтому проверка не возвращает расширению отозванный grant.
+  const currentFixtureUrl = await api(
+    "return (await browser.tabs.get(arguments[0])).url;",
+    [fixture.id],
+  );
+  let fixtureHandle;
+  try {
+    for (const handle of await call("WebDriver:GetWindowHandles")) {
+      await call("WebDriver:SwitchToWindow", { handle });
+      if ((await execute("return location.href;")) === currentFixtureUrl) {
+        fixtureHandle = handle;
+        break;
+      }
+    }
+  } finally {
+    await call("WebDriver:SwitchToWindow", { handle: popupHandle });
+  }
+  assert.ok(fixtureHandle, "WebDriver не нашёл вкладку fixture перед revoke");
+  await verifyRevokedBFCache({
+    ...coverageAdapter,
+    run: async (operation) => {
+      await call("WebDriver:SwitchToWindow", { handle: fixtureHandle });
+      try {
+        return await execute(
+          "return (window.wrappedJSObject ?? window).__coverageFixture?.run(arguments[0]) ?? null;",
+          [operation],
+        );
+      } finally {
+        await call("WebDriver:SwitchToWindow", { handle: popupHandle });
+      }
+    },
+    revoke: () => message({ type: "revoke-site", tabId: fixture.id, pattern }),
   });
-  assert.equal(revoked.records.length, 0);
   assert.deepEqual(await origins(), []);
   assert.equal((await snapshot(secondFixture.id)).records.length, 0);
   await poll(

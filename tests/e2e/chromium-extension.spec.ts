@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type browser from "webextension-polyfill";
 import type { SiteAccessSnapshot } from "../../src/shared/contracts/site-access";
-import { verifyDetectionCoverage } from "./detection-coverage.mjs";
+import {
+  verifyDetectionCoverage,
+  verifyRevokedBFCache,
+} from "./detection-coverage.mjs";
 
 type ExtensionWindow = Window & { chrome: typeof browser };
 type CatalogProbeWindow = Window & {
@@ -481,7 +484,7 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
       }),
     );
 
-    await verifyDetectionCoverage({
+    const coverageAdapter = {
       label: "chromium-extension",
       navigate: (pathname: string) =>
         fixture.goto(new URL(pathname, baseURL).href),
@@ -500,7 +503,79 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
         ),
       reload: () => fixture.reload(),
       coverageText: popupText,
-    });
+      restartBackground: async () => {
+        const cdp = await context.newCDPSession(control);
+        const versions = new Map<
+          string,
+          {
+            versionId: string;
+            scriptURL: string;
+            runningStatus: string;
+            targetId?: string;
+          }
+        >();
+        const stoppedVersions = new Set<string>();
+        cdp.on(
+          "ServiceWorker.workerVersionUpdated",
+          ({ versions: updates }) => {
+            updates.forEach((version) => {
+              versions.set(version.versionId, version);
+              if (version.runningStatus === "stopped")
+                stoppedVersions.add(version.versionId);
+            });
+          },
+        );
+        await cdp.send("ServiceWorker.enable");
+        await expect
+          .poll(() =>
+            [...versions.values()].some(
+              (version) =>
+                version.scriptURL.startsWith(
+                  `chrome-extension://${extensionId}/`,
+                ) && version.runningStatus === "running",
+            ),
+          )
+          .toBe(true);
+        const previous = [...versions.values()].find(
+          (version) =>
+            version.scriptURL.startsWith(
+              `chrome-extension://${extensionId}/`,
+            ) && version.runningStatus === "running",
+        )!;
+        const oldWorker = context
+          .serviceWorkers()
+          .find((candidate) =>
+            candidate.url().startsWith(`chrome-extension://${extensionId}/`),
+          )!;
+        await oldWorker.evaluate(() => {
+          Reflect.set(globalThis, "__listenerLensRestartProbe", true);
+        });
+        stoppedVersions.delete(previous.versionId);
+        await cdp.send("ServiceWorker.stopWorker", {
+          versionId: previous.versionId,
+        });
+        await expect
+          .poll(() => stoppedVersions.has(previous.versionId))
+          .toBe(true);
+        return async () => {
+          await expect
+            .poll(() => versions.get(previous.versionId)?.runningStatus)
+            .toBe("running");
+          const nextWorker = context
+            .serviceWorkers()
+            .find((candidate) =>
+              candidate.url().startsWith(`chrome-extension://${extensionId}/`),
+            )!;
+          expect(
+            await nextWorker.evaluate(() =>
+              Reflect.has(globalThis, "__listenerLensRestartProbe"),
+            ),
+          ).toBe(false);
+          await cdp.detach();
+        };
+      },
+    };
+    await verifyDetectionCoverage(coverageAdapter);
 
     const otherUrl = new URL(fixtureUrl);
     otherUrl.hostname = "127.0.0.1";
@@ -542,7 +617,10 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
       .toBe(true);
 
     await expect.poll(popupText).toContain("Отозвать доступ");
-    await clickPopup("Отозвать доступ");
+    await verifyRevokedBFCache({
+      ...coverageAdapter,
+      revoke: () => clickPopup("Отозвать доступ"),
+    });
     await expect.poll(async () => (await snapshot()).records.length).toBe(0);
     await expect.poll(async () => (await readResults()).query).toBeUndefined();
     expect((await readResults()).cards).toEqual([]);
