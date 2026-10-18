@@ -8,14 +8,17 @@ import type {
 import { getSiteScope, isExactSitePattern } from "../shared/site-access";
 import { createLogger } from "../shared/logger";
 import { createId } from "../shared/id";
-import { isSupportedEventType } from "../shared/event-catalog/catalog";
-import { normalizeRecord } from "../shared/records/normalize";
-import type { ListenerReasonCode } from "../shared/contracts/records";
+import {
+  safeMetadataId,
+  sanitizeListenerRecord,
+} from "../shared/records/sanitize";
+import { MAX_COLLECTOR_RECORDS } from "../shared/contracts/collector";
 import {
   addRecord,
   MAX_TAB_RECORDS,
   getTabState,
   resetContext,
+  restoreContext,
   resetTabState,
   updateContext,
 } from "./tab-state";
@@ -30,6 +33,7 @@ export interface CollectorSender {
   documentId?: string;
   url?: string;
   origin?: string;
+  documentLifecycle?: string;
 }
 interface Session {
   tabId: number;
@@ -45,16 +49,6 @@ interface Session {
 }
 const logger = createLogger("background.site-access");
 const scriptPrefix = "listener-lens-site-";
-const reasonCodes = new Set<ListenerReasonCode>([
-  "HOOK_LATE",
-  "SURFACE_UNVERIFIED",
-  "RECORD_TRUNCATED",
-  "RECORD_LIMIT_REACHED",
-  "SOURCE_UNAVAILABLE",
-  "UNSUPPORTED_CONTEXT",
-  "FRAME_UNAVAILABLE",
-  "NAVIGATION_RESET",
-]);
 function registrationId(pattern: string) {
   // The exact pattern is encoded without exposing page paths or relying on a hash collision.
   return (
@@ -77,6 +71,7 @@ export class SiteAccessController {
   private broadRevocations = 0;
   private queue: Promise<void> = Promise.resolve();
   private registrationFailed = false;
+  private recoveries = new Map<number, Promise<void>>();
   constructor(private api: SiteAccessApi) {}
   private scopeVersion(pattern: string) {
     return `${this.broadRevocations}:${this.scopeGenerations.get(pattern) ?? 0}`;
@@ -256,7 +251,19 @@ export class SiteAccessController {
           records: [],
           reason: "REGISTRATION_FAILED",
         };
+      const version = this.scopeVersion(site.pattern);
       await this.pruneCollectors(tabId);
+      if (!this.sessions.has(frameKey(tabId, 0)))
+        await this.recoverCollectors(tabId);
+      if (
+        version !== this.scopeVersion(site.pattern) ||
+        this.blocked.has(site.pattern) ||
+        !(await this.grants()).has(site.pattern)
+      )
+        return { tabId, site, status: "no-access", records: [] };
+      const currentSite = getSiteScope((await this.api.tabs.get(tabId)).url);
+      if (currentSite?.pattern !== site.pattern)
+        return { tabId, site: currentSite, status: "recovering", records: [] };
       const main = this.sessions.get(frameKey(tabId, 0));
       if (!main || main.pattern !== site.pattern)
         return {
@@ -311,6 +318,23 @@ export class SiteAccessController {
         reason: "ACCESS_UNAVAILABLE",
       };
     }
+  }
+  private recoverCollectors(tabId: number): Promise<void> {
+    const existing = this.recoveries.get(tabId);
+    if (existing) return existing;
+    logger.debug("requesting live collector recovery", { tabId });
+    const recovery = this.api.tabs
+      .sendMessage(tabId, { type: "collector-recover" })
+      .then(
+        () => undefined,
+        () => undefined,
+      )
+      .finally(() => {
+        if (this.recoveries.get(tabId) === recovery)
+          this.recoveries.delete(tabId);
+      });
+    this.recoveries.set(tabId, recovery);
+    return recovery;
   }
   private senderScope(sender: CollectorSender) {
     const direct = getSiteScope(sender.url);
@@ -370,6 +394,11 @@ export class SiteAccessController {
     const frameId = sender.frameId;
     const site = this.senderScope(sender);
     if (
+      sender.documentLifecycle !== undefined &&
+      sender.documentLifecycle !== "active"
+    )
+      return { allowed: false, code: "DOCUMENT_INACTIVE" };
+    if (
       tabId === undefined ||
       frameId === undefined ||
       !site ||
@@ -377,12 +406,13 @@ export class SiteAccessController {
       !message.documentId ||
       this.blocked.has(site.pattern)
     )
-      return { allowed: false };
+      return { allowed: false, code: "SCOPE_UNAVAILABLE" };
     const version = this.scopeVersion(site.pattern);
     const key = frameKey(tabId, frameId);
     const claim = (this.claims.get(key) ?? 0) + 1;
     this.claims.set(key, claim);
-    if (!(await this.grants()).has(site.pattern)) return { allowed: false };
+    if (!(await this.grants()).has(site.pattern))
+      return { allowed: false, code: "GRANT_MISSING" };
     const documentId = sender.documentId ?? message.documentId;
     const challenge = createId();
     const response = (await this.api.tabs
@@ -401,17 +431,20 @@ export class SiteAccessController {
       response?.documentId !== message.documentId ||
       response?.challenge !== challenge
     )
-      return { allowed: false };
+      return { allowed: false, code: "DOCUMENT_CHANGED" };
+    const stillGranted = (await this.grants()).has(site.pattern);
     if (
       version !== this.scopeVersion(site.pattern) ||
-      this.claims.get(key) !== claim ||
-      this.blocked.has(site.pattern)
+      this.blocked.has(site.pattern) ||
+      !stillGranted
     )
-      return { allowed: false };
+      return { allowed: false, code: "SESSION_INVALIDATED" };
+    if (this.claims.get(key) !== claim)
+      return { allowed: false, recover: true, code: "CLAIM_SUPERSEDED" };
     const existing = this.sessions.get(key);
-    if (existing?.documentId === documentId)
+    if (existing?.documentId === documentId && message.resume !== true)
       return { allowed: true, token: existing.token, pattern: site.pattern };
-    if (existing) {
+    if (existing && existing.documentId !== documentId) {
       if (frameId === 0) resetTabState(tabId);
       else resetContext(tabId, existing.documentId);
     }
@@ -508,6 +541,25 @@ export class SiteAccessController {
     if (tabId === undefined || frameId === undefined) return undefined;
     const session = this.sessions.get(frameKey(tabId, frameId));
     const site = this.senderScope(sender);
+    if (!session && site && message.type !== "context-reset") {
+      const version = this.scopeVersion(site.pattern);
+      const granted = (await this.grants()).has(site.pattern);
+      const current = (await this.api.tabs
+        .sendMessage(tabId, { type: "collector-status" }, { frameId })
+        .catch(() => undefined)) as
+        { documentId?: string; installed?: boolean } | undefined;
+      if (
+        granted &&
+        !this.blocked.has(site.pattern) &&
+        version === this.scopeVersion(site.pattern) &&
+        safeMetadataId(message.documentId) &&
+        current?.documentId === message.documentId &&
+        current?.installed === true &&
+        (sender.documentLifecycle === undefined ||
+          sender.documentLifecycle === "active")
+      )
+        return { recover: true };
+    }
     if (
       !session ||
       !site ||
@@ -551,6 +603,44 @@ export class SiteAccessController {
       this.notify(tabId);
       return { stop: false };
     }
+    if (message.type === "collector-snapshot") {
+      if (
+        !Array.isArray(message.records) ||
+        message.records.length > MAX_COLLECTOR_RECORDS
+      )
+        return { stop: true };
+      const records = message.records
+        .map((record) =>
+          sanitizeListenerRecord(record, {
+            tabId,
+            frameId,
+            documentId: session.documentId,
+          }),
+        )
+        .filter((record) => record !== undefined);
+      restoreContext(
+        tabId,
+        session.documentId,
+        records,
+        message.recordLimitReached === true,
+      );
+      updateContext(tabId, {
+        documentId: session.documentId,
+        frameId,
+        contextKind: "document",
+        navigationId: safeMetadataId(message.navigationId),
+      });
+      session.ready = true;
+      session.partial = message.partial === true;
+      session.failed = false;
+      logger.info("collector recovery accepted", {
+        tabId,
+        frameId,
+        count: records.length,
+      });
+      this.notify(tabId);
+      return { stop: false };
+    }
     if (message.type === "collector-failed") {
       session.failed = true;
       this.notify(tabId);
@@ -565,59 +655,18 @@ export class SiteAccessController {
     if (!session.ready) return { stop: true };
     if (!isListenerMessage(value)) return { stop: false };
     if (value.type === "listener-record" && value.record) {
-      const record = value.record;
-      if (!isSupportedEventType(record.eventType)) return { stop: false };
-      const safeId = (id: unknown) =>
-        typeof id === "string" && /^[a-zA-Z0-9-]{1,160}$/.test(id)
-          ? id
-          : undefined;
-      const safeBoolean = (flag: unknown) =>
-        typeof flag === "boolean" ? flag : null;
-      addRecord(
-        normalizeRecord({
-          id: safeId(record.id),
-          eventType: record.eventType,
-          tabId,
-          frameId,
-          documentId: session.documentId,
-          browser: "unknown",
-          contextKind:
-            record.contextKind === "shadow-root" ? "shadow-root" : "document",
-          source: {
-            target: ["window", "document", "element"].includes(
-              record.source.target,
-            )
-              ? record.source.target
-              : "unknown",
-            path: /^[a-z][a-z0-9:-]{0,79}$/.test(record.source.path)
-              ? record.source.path
-              : "unknown",
-            sourceKind:
-              record.source.sourceKind === "inline-attribute" ||
-              record.source.sourceKind === "event-handler-property"
-                ? record.source.sourceKind
-                : "add-event-listener",
-          },
-          lifecycle:
-            record.lifecycle === "removed" || record.lifecycle === "unknown"
-              ? record.lifecycle
-              : "active",
-          listenerKey: safeId(record.listenerKey),
-          listenerOptions: {
-            capture: safeBoolean(record.listenerOptions?.capture),
-            passive: safeBoolean(record.listenerOptions?.passive),
-            once: safeBoolean(record.listenerOptions?.once),
-          },
-          reasonCodes: [
-            ...new Set<ListenerReasonCode>([
-              ...(Array.isArray(record.reasonCodes)
-                ? record.reasonCodes.filter((code) => reasonCodes.has(code))
-                : []),
-              "HOOK_LATE",
-            ]),
-          ],
-        }),
-      );
+      const record = sanitizeListenerRecord(value.record, {
+        tabId,
+        frameId,
+        documentId: session.documentId,
+      });
+      if (!record) return { stop: false };
+      if (
+        message.recordLimitReached === true &&
+        !record.reasonCodes.includes("RECORD_LIMIT_REACHED")
+      )
+        record.reasonCodes.push("RECORD_LIMIT_REACHED");
+      addRecord(record);
     } else if (value.type === "context-reset") {
       if (frameId === 0) resetTabState(tabId);
       else resetContext(tabId, session.documentId);

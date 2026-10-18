@@ -7,6 +7,7 @@ import {
 import { getTabState, resetTabState } from "../../src/background/tab-state";
 import { normalizeRecord } from "../../src/shared/records/normalize";
 import { describeEvent } from "../../src/shared/event-catalog/catalog";
+import { MAX_COLLECTOR_RECORDS } from "../../src/shared/contracts/collector";
 
 const pattern = "https://example.test/*";
 const sender: CollectorSender = {
@@ -143,6 +144,254 @@ beforeEach(() => {
 });
 
 describe("persistent site access", () => {
+  it("восстанавливает готовый снимок после реального сброса памяти background", async () => {
+    const { controller, api } = fixture();
+    const old = await ready(controller);
+    const original = record(old.token).record;
+    original.lifecycle = "removed";
+    resetTabState(10);
+    const restarted = new SiteAccessController(api as unknown as SiteAccessApi);
+    const session = await start(restarted);
+    expect(session.token).not.toBe(old.token);
+    expect(
+      await restarted.handleMessage(
+        {
+          type: "collector-snapshot",
+          token: session.token,
+          records: [original],
+        },
+        sender,
+      ),
+    ).toEqual({ stop: false });
+    const state = await restarted.snapshot(10);
+    expect(state.status).toBe("ready");
+    expect(state.records).toEqual([
+      expect.objectContaining({
+        id: original.id,
+        lifecycle: "removed",
+        tabId: 10,
+        frameId: 0,
+        documentId: "native-a",
+      }),
+    ]);
+  });
+
+  it("принимает пустой снимок как готовый и сохраняет overflow при replay", async () => {
+    const { controller } = fixture();
+    const session = await start(controller);
+    await controller.handleMessage(
+      {
+        type: "collector-snapshot",
+        token: session.token,
+        records: [],
+        recordLimitReached: true,
+      },
+      sender,
+    );
+    const state = await controller.snapshot(10);
+    expect(state.status).toBe("limited");
+    expect(state.records).toEqual([]);
+    expect(state.coverage?.reasons).toEqual(["RECORD_LIMIT_REACHED"]);
+  });
+
+  it("выдаёт свежий token и отклоняет запоздалый reset прежней сессии", async () => {
+    const { controller } = fixture();
+    const old = await ready(controller);
+    const session = (await controller.handleMessage(
+      { type: "collector-start", documentId: "own-a", resume: true },
+      sender,
+    )) as { token: string };
+    expect(session.token).not.toBe(old.token);
+    const original = record(session.token).record;
+    await controller.handleMessage(
+      { type: "collector-snapshot", token: session.token, records: [original] },
+      sender,
+    );
+    expect(
+      await controller.handleMessage(
+        { type: "context-reset", documentId: "own-a", token: old.token },
+        sender,
+      ),
+    ).toEqual({ stop: true });
+    expect((await controller.snapshot(10)).records[0]?.id).toBe(original.id);
+  });
+
+  it("повторный снимок заменяет lifecycle и не создаёт дубли", async () => {
+    const { controller } = fixture();
+    const session = await ready(controller);
+    const original = record(session.token).record;
+    const snapshot = {
+      type: "collector-snapshot",
+      token: session.token,
+      records: [original],
+    };
+    await controller.handleMessage(snapshot, sender);
+    await controller.handleMessage(
+      { ...snapshot, records: [{ ...original, lifecycle: "removed" }] },
+      sender,
+    );
+    const state = await controller.snapshot(10);
+    expect(state.records).toHaveLength(1);
+    expect(state.records[0]?.lifecycle).toBe("removed");
+  });
+
+  it("отклоняет слишком большой снимок до изменения состояния", async () => {
+    const { controller } = fixture();
+    const session = await ready(controller);
+    const original = record(session.token);
+    await controller.handleMessage(original, sender);
+    expect(
+      await controller.handleMessage(
+        {
+          type: "collector-snapshot",
+          token: session.token,
+          records: Array.from(
+            { length: MAX_COLLECTOR_RECORDS + 1 },
+            () => original.record,
+          ),
+        },
+        sender,
+      ),
+    ).toEqual({ stop: true });
+    expect(getTabState(10).records).toHaveLength(1);
+  });
+
+  it("повторно отбирает поля снимка на границе background", async () => {
+    const { controller } = fixture();
+    const session = await start(controller);
+    const original = record(session.token).record;
+    Object.assign(original, {
+      callbackBody: "private-callback",
+      payload: "private-payload",
+      limitations: ["private-limit"],
+    });
+    Object.assign(original.source, {
+      scriptLocation: "private-script",
+      options: ["private-option"],
+      path: "button[data-private=secret]",
+    });
+    await controller.handleMessage(
+      {
+        type: "collector-snapshot",
+        token: session.token,
+        records: [original],
+        navigationId: "private/route?secret",
+      },
+      sender,
+    );
+    expect(JSON.stringify(await controller.snapshot(10))).not.toMatch(
+      /private-|data-private/,
+    );
+    expect(getTabState(10).records[0]?.source.path).toBe("unknown");
+  });
+
+  it("восстанавливает бездействующий сборщик по запросу popup", async () => {
+    const { controller, api } = fixture();
+    const fallback = api.tabs.sendMessage.getMockImplementation()!;
+    api.tabs.sendMessage.mockImplementation(async (id, message, options) => {
+      if (message.type !== "collector-recover")
+        return fallback(id, message, options);
+      const session = await start(controller);
+      await controller.handleMessage(
+        {
+          type: "collector-snapshot",
+          token: session.token,
+          records: [record(session.token).record],
+        },
+        sender,
+      );
+      return { installed: true, documentId: "own-a" };
+    });
+    const state = await controller.snapshot(10);
+    expect(state.status).toBe("ready");
+    expect(state.records).toHaveLength(1);
+    expect(api.tabs.sendMessage).toHaveBeenCalledWith(10, {
+      type: "collector-recover",
+    });
+  });
+
+  it("не принимает снимок при отзыве разрешения во время проверки документа", async () => {
+    const { controller, api, setGrants } = fixture();
+    const session = await ready(controller);
+    const gate = deferred<unknown>();
+    const calls = api.tabs.sendMessage.mock.calls.length;
+    api.tabs.sendMessage.mockImplementationOnce(
+      async () => gate.promise as never,
+    );
+    const pending = controller.handleMessage(
+      {
+        type: "collector-snapshot",
+        token: session.token,
+        records: [record(session.token).record],
+      },
+      sender,
+    );
+    await vi.waitFor(() =>
+      expect(api.tabs.sendMessage.mock.calls.length).toBeGreaterThan(calls),
+    );
+    setGrants([]);
+    controller.permissionsRemoved([pattern]);
+    gate.resolve({ installed: true, documentId: "own-a" });
+    expect(await pending).toEqual({ stop: true });
+    expect(getTabState(10).records).toEqual([]);
+  });
+
+  it("не возвращает старый документ из снимка, задержанного навигацией", async () => {
+    const { controller, api } = fixture();
+    const old = await ready(controller);
+    const gate = deferred<unknown>();
+    const calls = api.tabs.sendMessage.mock.calls.length;
+    api.tabs.sendMessage.mockImplementationOnce(
+      async () => gate.promise as never,
+    );
+    const pending = controller.handleMessage(
+      {
+        type: "collector-snapshot",
+        token: old.token,
+        records: [record(old.token).record],
+      },
+      sender,
+    );
+    await vi.waitFor(() =>
+      expect(api.tabs.sendMessage.mock.calls.length).toBeGreaterThan(calls),
+    );
+    const nextSender = { ...sender, documentId: "native-next" };
+    const next = await ready(controller, nextSender, "own-next");
+    await controller.handleMessage(
+      { type: "collector-snapshot", token: next.token, records: [] },
+      nextSender,
+    );
+    gate.resolve({ installed: true, documentId: "own-a" });
+    expect(await pending).toEqual({ stop: true });
+    const state = await controller.snapshot(10);
+    expect(state.documentId).toBe("native-next");
+    expect(state.records).toEqual([]);
+  });
+
+  it("не авторизует замороженный документ и не восстанавливает после revoke", async () => {
+    const { controller, setGrants } = fixture();
+    expect(
+      (await start(controller, { ...sender, documentLifecycle: "cached" }))
+        .allowed,
+    ).toBe(false);
+    const session = await ready(controller);
+    setGrants([]);
+    controller.permissionsRemoved([pattern]);
+    expect((await start(controller)).allowed).toBe(false);
+    expect(
+      await controller.handleMessage(
+        {
+          type: "collector-snapshot",
+          token: session.token,
+          documentId: "own-a",
+          records: [],
+        },
+        sender,
+      ),
+    ).toEqual({ stop: true });
+    expect(getTabState(10).records).toEqual([]);
+  });
+
   it("сохраняет сборщик и записи при loading того же SPA-документа", async () => {
     const { controller, setTabs } = fixture();
     const session = await ready(controller);
@@ -301,7 +550,10 @@ describe("persistent site access", () => {
     const { controller, api } = fixture([]);
     await controller.reconcile();
     expect((await controller.snapshot(10)).status).toBe("no-access");
-    expect(await start(controller)).toEqual({ allowed: false });
+    expect(await start(controller)).toEqual({
+      allowed: false,
+      code: "GRANT_MISSING",
+    });
     expect(api.permissions.contains).not.toHaveBeenCalled();
     expect(api.scripting.registerContentScripts).not.toHaveBeenCalled();
   });
@@ -650,7 +902,10 @@ describe("persistent site access", () => {
       documentId: "current-document",
       challenge: "wrong",
     });
-    expect(await start(controller)).toEqual({ allowed: false });
+    expect(await start(controller)).toEqual({
+      allowed: false,
+      code: "DOCUMENT_CHANGED",
+    });
     expect(api.tabs.sendMessage).toHaveBeenCalledWith(
       10,
       expect.objectContaining({
@@ -717,12 +972,45 @@ describe("persistent site access", () => {
       documentId: oldMessage.documentId,
       challenge: oldMessage.challenge,
     });
-    expect(await oldStart).toEqual({ allowed: false });
+    expect(await oldStart).toEqual({
+      allowed: false,
+      recover: true,
+      code: "CLAIM_SUPERSEDED",
+    });
     expect(
       await controller.handleMessage(record(current.token), currentSender),
     ).toEqual({ stop: false });
     expect(getTabState(10).records[0]?.documentId).toBe("native-new");
   });
+  it("повторяет старт, если сброс навигации завершился во время challenge", async () => {
+    const { controller, api } = fixture();
+    const pending = deferred<{ documentId: unknown; challenge: unknown }>();
+    let challenge: Record<string, unknown> = {};
+    api.tabs.sendMessage.mockImplementationOnce(async (_id, message) => {
+      challenge = message;
+      return pending.promise;
+    });
+    const starting = start(controller);
+    await vi.waitFor(() => expect(api.tabs.sendMessage).toHaveBeenCalled());
+    controller.resetTab(10);
+    pending.resolve({
+      documentId: challenge.documentId,
+      challenge: challenge.challenge,
+    });
+    expect(await starting).toEqual({
+      allowed: false,
+      recover: true,
+      code: "CLAIM_SUPERSEDED",
+    });
+    expect(getTabState(10).records).toEqual([]);
+    const session = await ready(controller);
+    expect(session.allowed).toBe(true);
+    expect(
+      await controller.handleMessage(record(session.token), sender),
+    ).toEqual({ stop: false });
+    expect(getTabState(10).records).toHaveLength(1);
+  });
+
   it("preserves an already authenticated child when top-frame startup finishes later", async () => {
     const { controller } = fixture();
     const child = { ...sender, frameId: 3, documentId: "native-child" };
@@ -757,7 +1045,7 @@ describe("persistent site access", () => {
     const { controller } = fixture();
     expect(
       await start(controller, { ...sender, url: "about:blank", frameId: 1 }),
-    ).toEqual({ allowed: false });
+    ).toEqual({ allowed: false, code: "SCOPE_UNAVAILABLE" });
     expect(
       await start(controller, {
         ...sender,
@@ -829,14 +1117,17 @@ describe("persistent site access", () => {
     expect(await pendingRecord).toEqual({ stop: true });
     expect(getTabState(10).records).toHaveLength(0);
   });
-  it("does not infer restored history or readiness after a service-worker restart", async () => {
+  it("requests recovery without inferring a snapshot after background restart", async () => {
     const { controller, api } = fixture();
     const session = await ready(controller);
     const restarted = new SiteAccessController(api as unknown as SiteAccessApi);
     expect((await restarted.snapshot(10)).status).toBe("reload-required");
     expect(
-      await restarted.handleMessage(record(session.token), sender),
-    ).toEqual({ stop: true });
+      await restarted.handleMessage(
+        { ...record(session.token), documentId: "own-a" },
+        sender,
+      ),
+    ).toEqual({ recover: true });
   });
   it("ignores page-supplied popup actions and protected pages", async () => {
     const { controller, setTabs, api } = fixture();

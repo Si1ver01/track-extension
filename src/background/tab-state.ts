@@ -4,9 +4,10 @@ import type {
   TabState,
 } from "../shared/contracts/records";
 import { createLogger } from "../shared/logger";
+import { MAX_COLLECTOR_RECORDS } from "../shared/contracts/collector";
 
 const logger = createLogger("background.tab-state");
-export const MAX_TAB_RECORDS = 200;
+export const MAX_TAB_RECORDS = MAX_COLLECTOR_RECORDS;
 const states = new Map<number, TabState>();
 
 export function getTabState(tabId: number): TabState {
@@ -78,6 +79,26 @@ export function resetContext(tabId: number, documentId: string): TabState {
   states.set(tabId, state);
   logger.info("context state reset", { tabId, documentId });
   return state;
+}
+export function restoreContext(
+  tabId: number,
+  documentId: string,
+  records: ListenerRecord[],
+  recordLimitReached: boolean,
+): void {
+  resetContext(tabId, documentId);
+  if (recordLimitReached) {
+    const state = getTabState(tabId);
+    state.recordLimitReached = true;
+    states.set(tabId, state);
+  }
+  records.forEach(addRecord);
+  logger.debug("context snapshot restored", {
+    tabId,
+    documentId,
+    count: records.length,
+    recordLimitReached,
+  });
 }
 export function resetTabState(tabId: number): void {
   states.delete(tabId);
