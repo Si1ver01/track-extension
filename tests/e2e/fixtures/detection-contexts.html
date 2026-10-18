@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Проверка lifecycle и контекстов</title>
+  </head>
+  <body>
+    <button type="button">Property-обработчик</button>
+    <section onfocus="void 'coverage-inline-secret'">Inline-обработчик</section>
+    <input value="coverage-input-secret" />
+    <script>
+      const button = document.querySelector("button");
+      const inline = document.querySelector("section");
+      const state = {
+        token: crypto.randomUUID(),
+        persisted: null,
+        popCount: 0,
+        firstCalls: 0,
+        secondCalls: 0,
+        correctThis: false,
+      };
+      function first() {
+        void "coverage-callback-secret";
+        state.firstCalls += 1;
+        state.correctThis = this === button;
+        return false;
+      }
+      function second() {
+        state.secondCalls += 1;
+        state.correctThis = this === button;
+        return false;
+      }
+      window.addEventListener("pageshow", (event) => {
+        state.persisted = event.persisted;
+      });
+      window.addEventListener("popstate", () => {
+        state.popCount += 1;
+      });
+      setTimeout(() => window.addEventListener("click", () => {}), 500);
+      window.__coverageFixture = {
+        run(operation) {
+          switch (operation) {
+            case "property-add":
+            case "property-repeat":
+              button.onclick = first;
+              state.getterIdentity = button.onclick === first;
+              break;
+            case "property-replace":
+            case "property-readd":
+              button.onclick = second;
+              state.getterIdentity = button.onclick === second;
+              break;
+            case "property-remove":
+              button.onclick = null;
+              state.getterIdentity = button.onclick === null;
+              break;
+            case "inline-replace":
+              inline.setAttribute(
+                "onfocus",
+                "void 'coverage-inline-replacement-secret'",
+              );
+              break;
+            case "inline-remove":
+              inline.removeAttribute("onfocus");
+              break;
+            case "inline-readd": {
+              const attribute = document.createAttribute("onfocus");
+              attribute.value = "void 'coverage-inline-readded-secret'";
+              inline.setAttributeNode(attribute);
+              break;
+            }
+            case "shadow":
+              for (const mode of ["open", "closed"]) {
+                const host = document.createElement("div");
+                document.body.append(host);
+                const root = host.attachShadow({ mode });
+                root.addEventListener("copy", () => {});
+                const child = document.createElement("button");
+                root.append(child);
+                child.onpointerdown = () => {};
+                child.setAttribute("onblur", "void 'coverage-shadow-secret'");
+              }
+              break;
+            case "spa-push":
+              history.pushState({}, "", "?route=push");
+              document.addEventListener("keyup", () => {});
+              break;
+            case "spa-replace":
+              history.replaceState({}, "", "?route=replace");
+              document.addEventListener("change", () => {});
+              break;
+            case "spa-after-back":
+              window.addEventListener("paste", () => {});
+              break;
+            case "overflow":
+              for (let index = 0; index < 205; index += 1) {
+                const target = document.createElement("span");
+                document.body.append(target);
+                target.onmousedown = () => {};
+              }
+              break;
+          }
+          if (operation.startsWith("property-")) {
+            state.cancelled = !button.dispatchEvent(
+              new Event("click", { cancelable: true }),
+            );
+          }
+          return { ...state, route: location.search };
+        },
+      };
+    </script>
+  </body>
+</html>

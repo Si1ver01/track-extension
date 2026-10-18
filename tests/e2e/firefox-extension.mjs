@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createReadStream } from "node:fs";
 import { createServer } from "node:http";
 import path from "node:path";
+import { verifyDetectionCoverage } from "./detection-coverage.mjs";
 import {
   extensionUuid,
   launchFirefoxExtension,
@@ -29,6 +30,19 @@ try {
   driver = await launchFirefoxExtension();
   const { call, execute, executeAsync } = driver;
   await call("Marionette:SetContext", { value: "chrome" });
+  // Тестовая сборка выключает этот механизм при старте. Включаем после
+  // запуска; реальное восстановление подтверждает общий сценарий по pageshow.
+  const environment =
+    await execute(`Services.prefs.setBoolPref('fission.bfcacheInParent', true);
+    return { version: Services.appinfo.version, bfcache: Services.prefs.getBoolPref('fission.bfcacheInParent') };`);
+  assert.equal(environment.bfcache, true);
+  console.debug(
+    JSON.stringify({
+      scope: "firefox-extension",
+      phase: "окружение",
+      ...environment,
+    }),
+  );
   await execute(
     `const tab = gBrowser.addTab(arguments[0], {
     triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal()
@@ -215,11 +229,49 @@ try {
     "return browser.scripting.executeScript({target:{tabId:arguments[0],allFrames:true},func:()=>location.hostname});",
     [fixture.id],
   );
+  for (const frame of allowedDocuments) {
+    await poll(
+      () =>
+        api(
+          `try {
+      const status = await browser.tabs.sendMessage(arguments[0], {type: 'collector-status'}, {frameId: arguments[1]});
+      return status?.installed === true;
+    } catch { return false; }`,
+          [fixture.id, frame.frameId],
+        ),
+      Boolean,
+      "Firefox не установил сборщик разрешённого фрейма",
+    );
+  }
+  await api(
+    `return browser.scripting.executeScript({
+    target: {tabId: arguments[0], allFrames: true}, world: 'MAIN',
+    func: () => document.querySelector('#frame-button')?.addEventListener('click', () => {})
+  });`,
+    [fixture.id],
+  );
+  const frameState = await poll(
+    () => snapshot(fixture.id),
+    (state) =>
+      state.records.some(
+        (record) =>
+          record.frameId > 0 &&
+          record.documentId !== state.documentId &&
+          record.source.path === "button" &&
+          record.eventType === "click",
+      ),
+    "Firefox не собрал отдельный документ разрешённого iframe",
+  );
+  assert.deepEqual(frameState.coverage?.reasons, ["FRAME_PARTIAL"]);
   assert.ok(allowedDocuments.length >= 2);
   assert.ok(allowedDocuments.every((frame) => frame.result === "localhost"));
   assert.ok(
-    collected.records.every((record) =>
-      allowedDocuments.some((frame) => frame.documentId === record.documentId),
+    frameState.records.every((record) =>
+      allowedDocuments.some(
+        (frame) =>
+          frame.frameId === record.frameId &&
+          frame.documentId === record.documentId,
+      ),
     ),
   );
   await poll(
@@ -256,6 +308,7 @@ try {
     "Настоящий popup Firefox не показал собранные записи",
   );
   assert.equal(initialResults.search.label, "Поиск по метаданным");
+  assert.match(initialResults.text, /Покрытие встроенных фреймов ограничено/);
   assert.ok(
     initialResults.groups.some((group) => group.startsWith("click · ")),
   );
@@ -475,6 +528,37 @@ try {
       message: "real collection verified",
     }),
   );
+
+  await verifyDetectionCoverage({
+    label: "firefox-extension",
+    navigate: async (pathname) => {
+      const url = new URL(pathname, fixtureUrl).href;
+      await api(
+        "await browser.tabs.update(arguments[0], {url: arguments[1]});",
+        [fixture.id, url],
+      );
+      await poll(
+        () => api("return browser.tabs.get(arguments[0]);", [fixture.id]),
+        (tab) => tab.status === "complete" && tab.url === url,
+        "Firefox не завершил навигацию fixture",
+      );
+    },
+    run: async (operation) => {
+      const results = await api(
+        `return browser.scripting.executeScript({
+        target: {tabId: arguments[0], frameIds: [0]}, world: 'MAIN',
+        func: name => window.__coverageFixture?.run(name) ?? null,
+        args: [arguments[1]]
+      });`,
+        [fixture.id, operation],
+      );
+      return results[0]?.result ?? null;
+    },
+    snapshot: () => snapshot(fixture.id),
+    back: () => api("await browser.tabs.goBack(arguments[0]);", [fixture.id]),
+    reload: () => api("await browser.tabs.reload(arguments[0]);", [fixture.id]),
+    coverageText: async () => (await popupResults())?.text ?? "",
+  });
 
   // Переустановка того же temporary add-on проходит через настоящий update lifecycle.
   await call("Addon:Install", {

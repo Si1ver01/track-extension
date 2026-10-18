@@ -35,22 +35,29 @@ Unit-команда включает integration-тесты. Общий `format:
 
 ## Матрица контекстов
 
-| Контекст                        | Состояние                       | Условия                                                                                      |
-| ------------------------------- | ------------------------------- | -------------------------------------------------------------------------------------------- |
-| Верхний document                | После разрешения и перезагрузки | Динамический script запускается на `document_start`; ранние регистрации могут быть невидимы. |
-| Same-origin iframe              | После разрешения                | Content script получает отдельные `frameId` и `documentId`.                                  |
-| Cross-origin iframe             | Частично                        | Нужен отдельный grant сайта iframe; разрешение верхней страницы его не заменяет.             |
-| `about:blank` и `srcdoc`        | Частично                        | Нужны поддержка origin fallback и подтверждённый браузером origin; иначе сбор отключён.      |
-| Open/closed Shadow DOM          | Best effort                     | Root регистрируется через `attachShadow`; закрытый root не обходится произвольно.            |
-| SPA navigation                  | Поддерживается                  | `pushState`, `replaceState` и `popstate` создают navigation lifecycle metadata.              |
-| Full navigation                 | Поддерживается                  | Новый document получает новый `documentId`, устаревший context state очищается.              |
-| Dedicated/shared/service Worker | Не поддерживается в MVP         | Popup сообщает об отсутствии поддержки Worker-контекстов.                                    |
+| Контекст                        | Состояние                       | Условия                                                                                                                               |
+| ------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Верхний document                | После разрешения и перезагрузки | Динамический script запускается на `document_start`; ранние регистрации могут быть невидимы.                                          |
+| Same-origin iframe              | После разрешения                | Content script получает отдельные `frameId` и `documentId`.                                                                           |
+| Cross-origin iframe             | Частично                        | Нужен отдельный grant сайта iframe; разрешение верхней страницы его не заменяет.                                                      |
+| `about:blank` и `srcdoc`        | Частично                        | Нужны поддержка origin fallback и подтверждённый браузером origin; иначе сбор отключён.                                               |
+| Open/closed Shadow DOM          | Best effort                     | Новые open/closed roots наблюдаются через `attachShadow`; доступны и существовавшие open roots. Обход старых closed roots недоступен. |
+| SPA navigation                  | Поддерживается                  | `pushState`, `replaceState` и `popstate` сохраняют document identity и доставку записей.                                              |
+| Full navigation                 | Поддерживается                  | Новый document получает новый `documentId`, устаревший context state очищается.                                                       |
+| BFCache                         | Требуется перезагрузка          | `pagehide` останавливает сборщик; возврат с `pageshow.persisted=true` не возобновляет сбор автоматически.                             |
+| Dedicated/shared/service Worker | Не поддерживается в MVP         | Popup сообщает об отсутствии поддержки Worker-контекстов.                                                                             |
 
 Каждая запись содержит `tabId`, `frameId`, `documentId`, `contextKind`, target identity и listener metadata. Event payload, callback body, DOM text, clipboard и input values не собираются и не попадают в logs. Диагностические сообщения используют уровни `DEBUG`, `INFO`, `WARN`, `ERROR`; значения событий и payload в них не выводятся.
 
 Unit и integration tests проверяют границы site scope, нормализацию metadata, permissions reconciliation, readiness и UI-действия. Браузерные проверки расширения должны устанавливать настоящую сборку, выдавать одному сайту доступ и проверять реальные записи после reload, изоляцию второго hostname и очистку после revoke.
 
 Панель результатов проверяется на поиск по разрешённым полям, группировку, счётчики и доступность карточек. При обновлении снимка того же главного документа поиск сохраняется; смена сайта, документа или отзыв доступа сбрасывают его. Идентификатор главного документа передаётся из подтверждённой background session, поэтому сброс работает и без main-frame записей. Chromium и Firefox E2E проверяют поиск и раскрытие metadata в настоящем action popup.
+
+Общий сценарий `tests/e2e/detection-coverage.mjs` проверяет property/inline assign, replace, remove и readd со стабильным ID, нативные getter и `return false`, новые open/closed Shadow DOM, три перехода SPA, замену документа при полной навигации, переполнение буфера и отсутствие тестовых секретов в снимке. Отдельная регистрация после подтверждения установки сборщиков проверяет разрешённый iframe и изоляцию фрейма другого hostname.
+
+Сценарий прошёл 18 октября 2026 года на Playwright Chromium `153.0.8010.12` и Firefox `155.0` с установленными production-сборками расширения.
+
+Проверка BFCache требует настоящего перехода A → B → назад: fixture должна получить `pageshow.persisted=true` и сохранить случайный токен документа. Затем проверяем `reload-required`, отсутствие старых записей и новый сбор после reload. Для Chromium убираем флаг Playwright `--disable-back-forward-cache`. В тестовой сборке Firefox после запуска включаем `fission.bfcacheInParent` через Marionette: startup сбрасывает значение из профиля. Синтетическое событие или повторная загрузка страницы не засчитываются.
 
 Допустимые имена регистраций и русские описания задаёт единый модуль `src/shared/event-catalog/catalog.ts`. Bridge, проверка inline/property surfaces и production background используют один каталог из 37 типов. В `addEventListener` и сообщениях background имена проверяются с учётом регистра; HTML-атрибуты нормализуются при чтении поверхности. Список групп и ограничения приведены в [каталоге событий](event-catalog.md).
 
@@ -61,6 +68,8 @@ Firefox smoke открывает fixture и проверяет наличие с
 ## Ограничения
 
 Hook устанавливается best-effort на `document_start`. Скрипты, выполнившиеся до hook, browser-protected URLs и изолированные cross-origin/frame contexts могут быть недоступны. Расширение не записывает event payload, clipboard/input values или callback body и не выполняет сетевые запросы.
+
+Property hooks сохраняют нативные configurable accessors `on...` на `window`, `document` и поддерживаемых DOM-прототипах. Callback не оборачивается; forwarding-свойства `body`/`frameset` для `blur`, `error`, `focus`, `load`, `scroll` используют общий slot с `window`. Собственные descriptors страницы могут обойти hook. Inline observer отслеживает имена атрибутов, их изменения и вставленные поддеревья, не читая код атрибутов. Изменения одного inline slot в пределах microtask объединяются по текущему состоянию.
 
 Firefox `gecko.id` в прототипе использует placeholder `listener-lens@example.invalid`. Перед публикацией его нужно заменить на контролируемый стабильный ID и повторить privacy/manifest audit.
 

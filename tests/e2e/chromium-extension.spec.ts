@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type browser from "webextension-polyfill";
 import type { SiteAccessSnapshot } from "../../src/shared/contracts/site-access";
+import { verifyDetectionCoverage } from "./detection-coverage.mjs";
 
 type ExtensionWindow = Window & { chrome: typeof browser };
 type CatalogProbeWindow = Window & {
@@ -12,11 +13,14 @@ type CatalogProbeWindow = Window & {
     listener: EventListener;
   };
 };
+type CoverageFixtureWindow = Window & {
+  __coverageFixture?: { run(operation: string): Record<string, unknown> };
+};
 
 test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium", async ({
   baseURL,
 }) => {
-  test.setTimeout(60_000);
+  test.setTimeout(120_000);
   const extensionPath = path.resolve(".output/chrome-mv3");
   const profilePath = await mkdtemp(
     path.join(tmpdir(), "listener-lens-chromium-"),
@@ -24,6 +28,7 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
   const context = await chromium.launchPersistentContext(profilePath, {
     channel: "chromium",
     headless: true,
+    ignoreDefaultArgs: ["--disable-back-forward-cache"],
     args: [
       `--disable-extensions-except=${extensionPath}`,
       `--load-extension=${extensionPath}`,
@@ -181,6 +186,79 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
       )
       .toBe(true);
     expect((await snapshot()).status).toBe("limited");
+    const allowedFrames = await control.evaluate(
+      (id) =>
+        (window as unknown as ExtensionWindow).chrome.scripting.executeScript({
+          target: { tabId: id, allFrames: true },
+          func: () => location.hostname,
+        }),
+      tabId,
+    );
+    for (const frame of allowedFrames) {
+      await expect
+        .poll(() =>
+          control.evaluate(
+            async ({ id, frameId }) => {
+              try {
+                const status = await (
+                  window as unknown as ExtensionWindow
+                ).chrome.tabs.sendMessage(
+                  id,
+                  { type: "collector-status" },
+                  { frameId },
+                );
+                return (status as { installed?: boolean })?.installed === true;
+              } catch {
+                return false;
+              }
+            },
+            { id: tabId, frameId: frame.frameId },
+          ),
+        )
+        .toBe(true);
+    }
+    await control.evaluate(
+      (id) =>
+        (window as unknown as ExtensionWindow).chrome.scripting.executeScript({
+          target: { tabId: id, allFrames: true },
+          world: "MAIN",
+          func: () =>
+            document
+              .querySelector("#frame-button")
+              ?.addEventListener("click", () => {}),
+        }),
+      tabId,
+    );
+    await expect
+      .poll(async () => {
+        const state = await snapshot();
+        return state.records.some(
+          (record) =>
+            record.frameId > 0 &&
+            record.documentId !== state.documentId &&
+            record.source.path === "button" &&
+            record.eventType === "click",
+        );
+      })
+      .toBe(true);
+    const frameState = await snapshot();
+    expect(allowedFrames.length).toBe(2);
+    expect(allowedFrames.every((frame) => frame.result === "localhost")).toBe(
+      true,
+    );
+    expect(
+      frameState.records.every((record) =>
+        allowedFrames.some(
+          (frame) =>
+            frame.frameId === record.frameId &&
+            frame.documentId === record.documentId,
+        ),
+      ),
+    ).toBe(true);
+    expect(frameState.coverage?.reasons).toEqual(["FRAME_PARTIAL"]);
+    await expect
+      .poll(popupText)
+      .toContain("Покрытие встроенных фреймов ограничено");
 
     const readResults = () =>
       control.evaluate(() => {
@@ -403,6 +481,27 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
       }),
     );
 
+    await verifyDetectionCoverage({
+      label: "chromium-extension",
+      navigate: (pathname: string) =>
+        fixture.goto(new URL(pathname, baseURL).href),
+      run: (operation: string) =>
+        fixture.evaluate(
+          (name) =>
+            (window as CoverageFixtureWindow).__coverageFixture?.run(name) ??
+            null,
+          operation,
+        ),
+      snapshot,
+      back: () =>
+        control.evaluate(
+          (id) => (window as unknown as ExtensionWindow).chrome.tabs.goBack(id),
+          tabId,
+        ),
+      reload: () => fixture.reload(),
+      coverageText: popupText,
+    });
+
     const otherUrl = new URL(fixtureUrl);
     otherUrl.hostname = "127.0.0.1";
     const otherId = await control.evaluate(
@@ -477,6 +576,7 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
           "PASS: real popup; exact grant; real listeners; two tabs; host isolation; revoke",
         nativePermissionPrompt: "covered-by-separate-native-test",
         resultsBrowsing: "verified",
+        version: context.browser()?.version(),
       }),
     );
   } finally {
