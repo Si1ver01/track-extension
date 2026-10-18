@@ -60,6 +60,7 @@ export function installListenerHook(
   let active = true;
   const original = EventTarget.prototype.addEventListener;
   const originalRemove = EventTarget.prototype.removeEventListener;
+  const getRootNode = Node.prototype.getRootNode;
   const removeWindowListener = window.removeEventListener.bind(window);
   const registry = new ListenerRegistry();
   const listenerKeys = new WeakMap<object, string>();
@@ -147,7 +148,7 @@ export function installListenerHook(
   } => {
     const id = targetId(target);
     const contextKind =
-      target instanceof Node && target.getRootNode() instanceof ShadowRoot
+      target instanceof Node && getRootNode.call(target) instanceof ShadowRoot
         ? "shadow-root"
         : "document";
     if (target === window)

@@ -172,6 +172,140 @@ describe("жизненный цикл property и inline поверхносте�
     }
   });
 
+  it.each(["body", "frameset"] as const)(
+    "объединяет forwarding slots %s и window",
+    (tagName) => {
+      const probe = capture();
+      const alias = document.createElement(tagName);
+      const handler = () => undefined;
+      const events = ["blur", "error", "focus", "load", "scroll"] as const;
+      const originals = events.map((event) =>
+        Reflect.get(window, `on${event}`),
+      );
+      try {
+        for (const event of events) {
+          const property = `on${event}`;
+          Reflect.set(alias, property, handler);
+          Reflect.set(window, property, handler);
+          Reflect.set(window, property, null);
+          Reflect.set(window, property, handler);
+          Reflect.set(alias, property, null);
+          const records = probe
+            .records()
+            .filter((record) => record.eventType === event);
+          expect(records.map((record) => record.lifecycle)).toEqual([
+            "active",
+            "removed",
+            "active",
+            "removed",
+          ]);
+          expect(new Set(records.map((record) => record.id)).size).toBe(1);
+          expect(
+            records.every((record) => record.source.target === "window"),
+          ).toBe(true);
+        }
+        alias.onclick = handler;
+        window.onclick = handler;
+        const clicks = probe
+          .records()
+          .filter((record) => record.eventType === "click");
+        expect(new Set(clicks.map((record) => record.id)).size).toBe(2);
+        expect(clicks.map((record) => record.source.target)).toEqual([
+          "element",
+          "window",
+        ]);
+      } finally {
+        events.forEach((event, index) =>
+          Reflect.set(window, `on${event}`, originals[index]),
+        );
+        window.onclick = null;
+        probe.close();
+      }
+    },
+  );
+
+  it("не вызывает собственные getRootNode и shadowRoot страницы", async () => {
+    const host = document.createElement("div");
+    const root = host.attachShadow({ mode: "open" });
+    root.innerHTML = '<button onclick="private-handler()"></button>';
+    const shadowGetter = vi.fn(() => {
+      throw new Error("page getter");
+    });
+    Object.defineProperty(host, "shadowRoot", { get: shadowGetter });
+    document.body.append(host);
+    const probe = capture();
+    const button = root.querySelector("button")!;
+    const handler = vi.fn();
+    const rootMethod = vi.fn(() => {
+      throw new Error("page method");
+    });
+    Object.defineProperty(button, "getRootNode", { value: rootMethod });
+    try {
+      expect(probe.records()).toEqual([
+        expect.objectContaining({ contextKind: "shadow-root" }),
+      ]);
+      expect(() => button.addEventListener("focus", handler)).not.toThrow();
+      button.dispatchEvent(new Event("focus"));
+      expect(handler).toHaveBeenCalledOnce();
+      expect(() => button.removeEventListener("focus", handler)).not.toThrow();
+      button.dispatchEvent(new Event("focus"));
+      expect(handler).toHaveBeenCalledOnce();
+      await flushMutations();
+      expect(rootMethod).not.toHaveBeenCalled();
+      expect(shadowGetter).not.toHaveBeenCalled();
+      expect(
+        probe
+          .records()
+          .filter((record) => record.eventType === "focus")
+          .map((record) => record.lifecycle),
+      ).toEqual(["active", "removed"]);
+    } finally {
+      probe.close();
+      host.remove();
+    }
+  });
+
+  it("после лимита новых slots продолжает lifecycle существующего slot", () => {
+    const probe = capture();
+    const first = document.createElement("button");
+    const handler = () => undefined;
+    try {
+      first.onclick = handler;
+      for (let index = 1; index < 2000; index += 1) {
+        document.createElement("button").onclick = handler;
+      }
+      document.createElement("button").onclick = handler;
+      const initial = probe.records();
+      expect(initial).toHaveLength(2001);
+      expect(
+        initial.slice(0, 2000).every((record) => record.lifecycle === "active"),
+      ).toBe(true);
+      expect(initial[2000]).toMatchObject({
+        lifecycle: "unknown",
+        reasonCodes: ["SURFACE_UNVERIFIED", "RECORD_LIMIT_REACHED"],
+      });
+      first.onclick = () => undefined;
+      first.onclick = null;
+      first.onclick = handler;
+      const updates = probe.records().slice(2001);
+      expect(updates.map((record) => record.lifecycle)).toEqual([
+        "active",
+        "removed",
+        "active",
+      ]);
+      expect(updates.every((record) => record.id === initial[0]!.id)).toBe(
+        true,
+      );
+      expect(
+        updates.every(
+          (record) => !record.reasonCodes.includes("RECORD_LIMIT_REACHED"),
+        ),
+      ).toBe(true);
+    } finally {
+      probe.close();
+    }
+  });
+
   it("собирает начальные inline имена без чтения значений атрибутов", () => {
     document.body.innerHTML =
       '<button onclick="inline-secret-one()"></button><button onclick="inline-secret-two()"></button>';

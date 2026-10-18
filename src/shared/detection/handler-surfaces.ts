@@ -11,6 +11,13 @@ import { createLogger } from "../logger";
 
 const logger = createLogger("detection.surfaces");
 const maxSlots = 2000;
+const windowForwardedEvents = new Set([
+  "blur",
+  "error",
+  "focus",
+  "load",
+  "scroll",
+]);
 type SurfaceKind = Exclude<ListenerSourceKind, "add-event-listener">;
 
 export interface HandlerSurface {
@@ -74,6 +81,10 @@ export function installHandlerSurfaces(
   const patches: PropertyPatch[] = [];
   const getAttributeNames = Element.prototype.getAttributeNames;
   const hasAttribute = Element.prototype.hasAttribute;
+  const shadowRootGetter = Object.getOwnPropertyDescriptor(
+    Element.prototype,
+    "shadowRoot",
+  )!.get!;
 
   const report = (
     target: EventTarget,
@@ -145,7 +156,8 @@ export function installHandlerSurfaces(
         );
       }
     }
-    if (element.shadowRoot) observeRoot(element.shadowRoot, batch);
+    const shadowRoot = shadowRootGetter.call(element) as ShadowRoot | null;
+    if (shadowRoot) observeRoot(shadowRoot, batch);
   };
 
   const scanTree = (root: Node, batch?: Set<string>) => {
@@ -210,8 +222,14 @@ export function installHandlerSurfaces(
           if (!active) return;
           try {
             const handler: unknown = original.get!.call(this);
+            const target =
+              windowForwardedEvents.has(eventType) &&
+              (this instanceof HTMLBodyElement ||
+                this instanceof HTMLFrameSetElement)
+                ? (this.ownerDocument.defaultView ?? this)
+                : this;
             report(
-              this,
+              target,
               eventType,
               "event-handler-property",
               typeof handler === "function",
