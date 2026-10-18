@@ -143,6 +143,87 @@ beforeEach(() => {
 });
 
 describe("persistent site access", () => {
+  it("сохраняет сборщик и записи при loading того же SPA-документа", async () => {
+    const { controller, setTabs } = fixture();
+    const session = await ready(controller);
+    const first = record(session.token);
+    await controller.handleMessage(first, sender);
+    setTabs([{ id: 10, url: "https://example.test/page?route=push" }]);
+    await controller.handleTabLoading(10);
+    expect((await controller.snapshot(10)).records[0]?.id).toBe(
+      first.record.id,
+    );
+    const next = record(session.token);
+    expect(await controller.handleMessage(next, sender)).toEqual({
+      stop: false,
+    });
+    expect((await controller.snapshot(10)).records).toHaveLength(2);
+  });
+
+  it("очищает прежний документ при loading без живого сборщика", async () => {
+    const { controller, setLive } = fixture();
+    const session = await ready(controller);
+    await controller.handleMessage(record(session.token), sender);
+    setLive(10, 0, undefined);
+    await controller.handleTabLoading(10);
+    expect(getTabState(10).records).toEqual([]);
+    expect(
+      await controller.handleMessage(record(session.token), sender),
+    ).toEqual({ stop: true });
+    expect((await controller.snapshot(10)).status).toBe("reload-required");
+  });
+
+  it("поздняя проверка loading не удаляет новую сессию документа", async () => {
+    const { controller, api } = fixture();
+    await ready(controller);
+    const pending = deferred<unknown>();
+    api.tabs.sendMessage.mockImplementationOnce(
+      () => pending.promise as Promise<undefined>,
+    );
+    const loading = controller.handleTabLoading(10);
+    const nextSender = { ...sender, documentId: "native-b" };
+    const next = await ready(controller, nextSender, "own-b");
+    pending.resolve(undefined);
+    await loading;
+    expect(
+      await controller.handleMessage(record(next.token), nextSender),
+    ).toEqual({ stop: false });
+    expect((await controller.snapshot(10)).documentId).toBe("native-b");
+  });
+
+  it("сохраняет unknown и причину ограничения реестра в production snapshot", async () => {
+    const { controller } = fixture();
+    const session = await ready(controller);
+    const message = record(session.token);
+    message.record.lifecycle = "unknown";
+    message.record.reasonCodes = ["RECORD_LIMIT_REACHED"];
+    await controller.handleMessage(message, sender);
+    expect(await controller.snapshot(10)).toMatchObject({
+      status: "limited",
+      records: [{ id: message.record.id, lifecycle: "unknown" }],
+      coverage: { reasons: ["RECORD_LIMIT_REACHED"] },
+    });
+  });
+
+  it("снимает потерю записей при pagehide главного документа", async () => {
+    const { controller } = fixture();
+    const session = await ready(controller);
+    const message = record(session.token);
+    message.record.reasonCodes = ["RECORD_LIMIT_REACHED"];
+    await controller.handleMessage(message, sender);
+    await controller.handleMessage(
+      { type: "context-reset", token: session.token },
+      sender,
+    );
+    const nextSender = { ...sender, documentId: "native-b" };
+    await ready(controller, nextSender, "own-b");
+    expect(await controller.snapshot(10)).toMatchObject({
+      status: "ready",
+      records: [],
+    });
+    expect((await controller.snapshot(10)).coverage).toBeUndefined();
+  });
+
   it("возвращает обе независимые причины и сохраняет overflow при обновлении", async () => {
     const { controller } = fixture();
     const session = await ready(controller);

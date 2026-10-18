@@ -12,7 +12,7 @@ export default defineBackground(() => {
   );
   browser.tabs.onRemoved.addListener((tabId) => access.resetTab(tabId));
   browser.tabs.onUpdated.addListener((tabId, change) => {
-    if (change.status === "loading") access.resetTab(tabId);
+    if (change.status === "loading") void access.handleTabLoading(tabId);
   });
   browser.permissions.onAdded.addListener((permissions) =>
     access.permissionsAdded(permissions.origins),

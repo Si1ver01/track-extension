@@ -193,6 +193,16 @@ export class SiteAccessController {
     resetTabState(tabId);
     this.notify(tabId);
   }
+  async handleTabLoading(tabId: number) {
+    const key = frameKey(tabId, 0);
+    const main = this.sessions.get(key);
+    if (!main?.ready) return;
+    const current = await this.currentCollector(main);
+    // Chromium сообщает loading и для History API. Живой сборщик того же
+    // документа сохраняет сессию и уже полученные записи.
+    if (this.sessions.get(key) !== main || current) return;
+    this.resetTab(tabId);
+  }
   private async stopPatterns(patterns: Set<string>) {
     const affected = [...this.sessions.values()].filter((session) =>
       patterns.has(session.pattern),
@@ -401,7 +411,10 @@ export class SiteAccessController {
     const existing = this.sessions.get(key);
     if (existing?.documentId === documentId)
       return { allowed: true, token: existing.token, pattern: site.pattern };
-    if (existing) resetContext(tabId, existing.documentId);
+    if (existing) {
+      if (frameId === 0) resetTabState(tabId);
+      else resetContext(tabId, existing.documentId);
+    }
     const session: Session = {
       tabId,
       frameId,
@@ -585,7 +598,10 @@ export class SiteAccessController {
                 ? record.source.sourceKind
                 : "add-event-listener",
           },
-          lifecycle: record.lifecycle === "removed" ? "removed" : "active",
+          lifecycle:
+            record.lifecycle === "removed" || record.lifecycle === "unknown"
+              ? record.lifecycle
+              : "active",
           listenerKey: safeId(record.listenerKey),
           listenerOptions: {
             capture: safeBoolean(record.listenerOptions?.capture),
@@ -603,7 +619,8 @@ export class SiteAccessController {
         }),
       );
     } else if (value.type === "context-reset") {
-      resetContext(tabId, session.documentId);
+      if (frameId === 0) resetTabState(tabId);
+      else resetContext(tabId, session.documentId);
       this.sessions.delete(frameKey(tabId, frameId));
     } else if (value.type === "context-navigation") {
       updateContext(tabId, {
