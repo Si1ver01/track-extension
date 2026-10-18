@@ -44,7 +44,8 @@ Unit-команда включает integration-тесты. Общий `format:
 | Open/closed Shadow DOM          | Best effort                     | Новые open/closed roots наблюдаются через `attachShadow`; доступны и существовавшие open roots. Обход старых closed roots недоступен. |
 | SPA navigation                  | Поддерживается                  | `pushState`, `replaceState` и `popstate` сохраняют document identity и доставку записей.                                              |
 | Full navigation                 | Поддерживается                  | Новый document получает новый `documentId`, устаревший context state очищается.                                                       |
-| BFCache                         | Требуется перезагрузка          | `pagehide` останавливает сборщик; возврат с `pageshow.persisted=true` не возобновляет сбор автоматически.                             |
+| BFCache                         | Автоматическое восстановление   | При `pagehide.persisted=true` доставка приостанавливается; `pageshow.persisted=true` запускает авторизацию и восстановление снимка.   |
+| Перезапуск background           | Автоматическое восстановление   | Живой content script передаёт снимок при следующем сообщении или запросе popup; прежние ID и локальный overflow сохраняются.          |
 | Dedicated/shared/service Worker | Не поддерживается в MVP         | Popup сообщает об отсутствии поддержки Worker-контекстов.                                                                             |
 
 Каждая запись содержит `tabId`, `frameId`, `documentId`, `contextKind`, target identity и listener metadata. Event payload, callback body, DOM text, clipboard и input values не собираются и не попадают в logs. Диагностические сообщения используют уровни `DEBUG`, `INFO`, `WARN`, `ERROR`; значения событий и payload в них не выводятся.
@@ -57,7 +58,9 @@ Unit и integration tests проверяют границы site scope, норм
 
 Сценарий прошёл 18 октября 2026 года на Playwright Chromium `153.0.8010.12` и Firefox `155.0` с установленными production-сборками расширения.
 
-Проверка BFCache требует настоящего перехода A → B → назад: fixture должна получить `pageshow.persisted=true` и сохранить случайный токен документа. Затем проверяем `reload-required`, отсутствие старых записей и новый сбор после reload. Для Chromium убираем флаг Playwright `--disable-back-forward-cache`. В тестовой сборке Firefox после запуска включаем `fission.bfcacheInParent` через Marionette: startup сбрасывает значение из профиля. Синтетическое событие или повторная загрузка страницы не засчитываются.
+Проверка BFCache требует настоящего перехода A → B → назад: fixture должна получить `pageshow.persisted=true` и сохранить случайный токен документа. Проверяем автоматическое восстановление прежнего `documentId`, ID записей и ограничения буфера, затем изменение lifecycle без дублей. Отдельный сценарий отзывает доступ, пока документ заморожен, и проверяет отсутствие результатов после возврата. Для Chromium убираем флаг Playwright `--disable-back-forward-cache`. В тестовой сборке Firefox после запуска включаем `fission.bfcacheInParent` через Marionette: startup сбрасывает значение из профиля. Синтетическое событие или повторная загрузка страницы не засчитываются.
+
+Background перезапускаем дважды: для восстановления без новых регистраций по запросу popup и для восстановления при новой регистрации после переполнения. В Chromium CDP останавливает настоящий service worker; проверяем событие остановки и исчезновение контрольного значения из его памяти. В Firefox Marionette завершает background context; после обычного сообщения должен появиться новый context ID. Обновление add-on проверяется отдельно и не заменяет перезапуск background.
 
 Допустимые имена регистраций и русские описания задаёт единый модуль `src/shared/event-catalog/catalog.ts`. Bridge, проверка inline/property surfaces и production background используют один каталог из 37 типов. В `addEventListener` и сообщениях background имена проверяются с учётом регистра; HTML-атрибуты нормализуются при чтении поверхности. Список групп и ограничения приведены в [каталоге событий](event-catalog.md).
 
@@ -68,6 +71,8 @@ Firefox smoke открывает fixture и проверяет наличие с
 ## Ограничения
 
 Hook устанавливается best-effort на `document_start`. Скрипты, выполнившиеся до hook, browser-protected URLs и изолированные cross-origin/frame contexts могут быть недоступны. Расширение не записывает event payload, clipboard/input values или callback body и не выполняет сетевые запросы.
+
+Восстановление использует ограниченный снимок в памяти живого content script: до 200 очищенных записей документа. Background повторно проверяет grant, текущий frame и token сессии, очищает метаданные и принимает снимок перед подтверждением готовности. Повторные попытки ограничены; heartbeat, storage и дополнительные permissions не используются. Если content script уничтожен при перезапуске браузера или обновлении расширения, нужна перезагрузка страницы.
 
 Property hooks сохраняют нативные configurable accessors `on...` на `window`, `document` и поддерживаемых DOM-прототипах. Callback не оборачивается; forwarding-свойства `body`/`frameset` для `blur`, `error`, `focus`, `load`, `scroll` используют общий slot с `window`. Собственные descriptors страницы могут обойти hook. Inline observer отслеживает имена атрибутов, их изменения и вставленные поддеревья, не читая код атрибутов. Изменения одного inline slot в пределах microtask объединяются по текущему состоянию.
 
