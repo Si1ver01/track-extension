@@ -7,6 +7,7 @@ import type {
 import { getSiteScope, isExactSitePattern } from "../shared/site-access";
 import { createLogger } from "../shared/logger";
 import { createId } from "../shared/id";
+import { isSupportedEventType } from "../shared/event-catalog/catalog";
 import { normalizeRecord } from "../shared/records/normalize";
 import type { ListenerReasonCode } from "../shared/contracts/records";
 import {
@@ -42,19 +43,6 @@ interface Session {
 }
 const logger = createLogger("background.site-access");
 const scriptPrefix = "listener-lens-site-";
-const supportedEvents = new Set([
-  "click",
-  "copy",
-  "cut",
-  "paste",
-  "input",
-  "change",
-  "submit",
-  "load",
-  "error",
-  "keydown",
-  "keyup",
-]);
 const reasonCodes = new Set<ListenerReasonCode>([
   "HOOK_LATE",
   "SURFACE_UNVERIFIED",
@@ -550,7 +538,7 @@ export class SiteAccessController {
     if (!isListenerMessage(value)) return { stop: false };
     if (value.type === "listener-record" && value.record) {
       const record = value.record;
-      if (!supportedEvents.has(record.eventType)) return { stop: false };
+      if (!isSupportedEventType(record.eventType)) return { stop: false };
       const safeId = (id: unknown) =>
         typeof id === "string" && /^[a-zA-Z0-9-]{1,160}$/.test(id)
           ? id

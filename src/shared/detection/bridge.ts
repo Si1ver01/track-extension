@@ -9,22 +9,12 @@ import { createListenerKey, ListenerRegistry } from "./registry";
 import { scanInlineSurface } from "./surfaces";
 import { createLogger } from "../logger";
 import { createId } from "../id";
+import {
+  isSupportedEventType,
+  SUPPORTED_EVENT_TYPES,
+} from "../event-catalog/catalog";
 
 const logger = createLogger("detection.bridge");
-
-const supported = new Set([
-  "click",
-  "copy",
-  "cut",
-  "paste",
-  "input",
-  "change",
-  "submit",
-  "load",
-  "error",
-  "keydown",
-  "keyup",
-]);
 
 export function createBridgeMessage(
   eventType: string,
@@ -45,7 +35,7 @@ export function createBridgeMessage(
     targetId?: string;
   } = {},
 ): BridgeRecordMessage | null {
-  if (!supported.has(eventType)) return null;
+  if (!isSupportedEventType(eventType)) return null;
   return {
     source: "listener-lens",
     nonce,
@@ -237,19 +227,6 @@ export function installListenerHook(
   };
   const originalSetAttribute = Element.prototype.setAttribute;
   const handlerDescriptors = new Map<string, PropertyDescriptor>();
-  const handlerEvents = [
-    "click",
-    "copy",
-    "cut",
-    "paste",
-    "input",
-    "change",
-    "submit",
-    "load",
-    "error",
-    "keydown",
-    "keyup",
-  ];
   const emitSurface = (
     target: EventTarget,
     eventType: string,
@@ -285,7 +262,7 @@ export function installListenerHook(
       "*",
     );
   };
-  for (const eventType of handlerEvents) {
+  for (const eventType of SUPPORTED_EVENT_TYPES) {
     const property = `on${eventType}`;
     const descriptor = Object.getOwnPropertyDescriptor(
       EventTarget.prototype,

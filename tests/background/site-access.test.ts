@@ -6,6 +6,7 @@ import {
 } from "../../src/background/site-access";
 import { getTabState, resetTabState } from "../../src/background/tab-state";
 import { normalizeRecord } from "../../src/shared/records/normalize";
+import { describeEvent } from "../../src/shared/event-catalog/catalog";
 
 const pattern = "https://example.test/*";
 const sender: CollectorSender = {
@@ -404,6 +405,92 @@ describe("persistent site access", () => {
     setLive(10, 0, "own-a", false);
     expect((await controller.snapshot(10)).status).toBe("reload-required");
   });
+  it.each([
+    "mousedown",
+    "mouseup",
+    "mousemove",
+    "mouseenter",
+    "mouseleave",
+    "mouseover",
+    "mouseout",
+    "dblclick",
+    "contextmenu",
+    "pointerdown",
+    "pointerup",
+    "pointermove",
+    "pointercancel",
+    "pointerenter",
+    "pointerleave",
+    "pointerover",
+    "pointerout",
+    "focus",
+    "blur",
+    "focusin",
+    "focusout",
+    "wheel",
+    "scroll",
+    "beforeinput",
+    "reset",
+    "invalid",
+  ])(
+    "принимает %s из подтверждённой сессии и заново очищает метаданные",
+    async (eventType) => {
+      const { controller } = fixture();
+      const session = await ready(controller);
+      const incoming = record(session.token);
+      const unsafe = {
+        ...incoming,
+        record: {
+          ...incoming.record,
+          eventType,
+          description: "private-description",
+          payload: "private-payload",
+          callbackBody: "private-callback",
+          source: { ...incoming.record.source, value: "private-value" },
+        },
+      };
+
+      expect(await controller.handleMessage(unsafe, sender)).toEqual({
+        stop: false,
+      });
+
+      const snapshot = await controller.snapshot(10);
+      expect(snapshot.status).toBe("ready");
+      expect(snapshot.records).toHaveLength(1);
+      expect(snapshot.records[0]).toMatchObject({
+        eventType,
+        description: describeEvent(eventType),
+        tabId: 10,
+        frameId: 0,
+        documentId: "native-a",
+      });
+      expect(JSON.stringify(snapshot.records)).not.toContain("private-");
+    },
+  );
+  it.each([
+    "custom-event",
+    "POINTERDOWN",
+    "onpointerdown",
+    "unknown",
+    "__proto__",
+    "constructor",
+    "toString",
+  ])(
+    "отбрасывает неподдерживаемый тип %s в подтверждённой сессии",
+    async (eventType) => {
+      const { controller } = fixture();
+      const session = await ready(controller);
+      const incoming = record(session.token);
+
+      expect(
+        await controller.handleMessage(
+          { ...incoming, record: { ...incoming.record, eventType } },
+          sender,
+        ),
+      ).toEqual({ stop: false });
+      expect((await controller.snapshot(10)).records).toEqual([]);
+    },
+  );
   it("uses native sender tab, frame and document identity for accepted records", async () => {
     const { controller } = fixture();
     const session = await ready(controller);
