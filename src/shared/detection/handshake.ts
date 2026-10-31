@@ -1,4 +1,4 @@
-import type { BridgeHandshake } from '../contracts/records';
+import type { BridgeHandshake } from "../contracts/records";
 
 type InjectBridge = () => Promise<void>;
 type PostHandshake = (message: BridgeHandshake, targetOrigin: string) => void;
@@ -9,5 +9,8 @@ export async function initializeBridgeHandshake(
   postHandshake: PostHandshake,
 ): Promise<void> {
   await injectBridge();
-  postHandshake({ source: 'listener-lens', type: 'install-bridge', nonce }, '*');
+  postHandshake(
+    { source: "listener-lens", type: "install-bridge", nonce },
+    "*",
+  );
 }
