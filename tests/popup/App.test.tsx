@@ -431,7 +431,7 @@ describe("popup site access", () => {
     expect(screen.queryByText("Обработчики событий не найдены.")).toBeNull();
   });
 
-  it("сохраняет поиск при обновлении записей и смене полноты в том же документе", async () => {
+  it("сохраняет поиск и фильтры при обновлении записей и смене полноты в том же документе", async () => {
     const mainRecord = {
       ...record,
       id: "main",
@@ -447,6 +447,17 @@ describe("popup site access", () => {
       name: "Поиск по метаданным",
     });
     fireEvent.change(search, { target: { value: "click" } });
+    fireEvent.change(
+      screen.getByRole("combobox", { name: "Состояние обработчика" }),
+      { target: { value: "active" } },
+    );
+    fireEvent.change(
+      screen.getByRole("combobox", { name: "Источник регистрации" }),
+      { target: { value: "unknown" } },
+    );
+    fireEvent.change(screen.getByRole("combobox", { name: "Фрейм" }), {
+      target: { value: "2" },
+    });
     browserMocks.sendMessage.mockResolvedValue({
       ...snapshot("limited", [record, mainRecord]),
       documentId: "main-document",
@@ -460,9 +471,15 @@ describe("popup site access", () => {
     await notify();
     expect(screen.getByRole("searchbox")).toBe(search);
     expect((search as HTMLInputElement).value).toBe("click");
+    expect(
+      screen
+        .getAllByRole("combobox")
+        .map((element) => (element as HTMLSelectElement).value),
+    ).toEqual(["active", "unknown", "2"]);
+    expect(screen.getByText("Показано записей: 1 из 1.")).toBeTruthy();
   });
 
-  it("сбрасывает поиск при смене главного документа даже без его записей", async () => {
+  it("сбрасывает поиск и фильтры при смене главного документа даже без его записей", async () => {
     browserMocks.sendMessage.mockResolvedValue({
       ...snapshot("limited", [record]),
       documentId: "main-before",
@@ -471,6 +488,17 @@ describe("popup site access", () => {
     const search = await screen.findByRole("searchbox");
     fireEvent.change(search, { target: { value: "нет-совпадений" } });
     expect(screen.getByText("По запросу ничего не найдено.")).toBeTruthy();
+    fireEvent.change(
+      screen.getByRole("combobox", { name: "Состояние обработчика" }),
+      { target: { value: "removed" } },
+    );
+    fireEvent.change(
+      screen.getByRole("combobox", { name: "Источник регистрации" }),
+      { target: { value: "unknown" } },
+    );
+    fireEvent.change(screen.getByRole("combobox", { name: "Фрейм" }), {
+      target: { value: "2" },
+    });
     browserMocks.sendMessage.mockResolvedValue({
       ...snapshot("limited", [{ ...record, documentId: "frame-after" }]),
       documentId: "main-after",
@@ -479,9 +507,14 @@ describe("popup site access", () => {
     expect((screen.getByRole("searchbox") as HTMLInputElement).value).toBe("");
     expect(screen.getByRole("heading", { name: /^click\b/ })).toBeTruthy();
     expect(screen.queryByText("По запросу ничего не найдено.")).toBeNull();
+    expect(
+      screen
+        .getAllByRole("combobox")
+        .map((element) => (element as HTMLSelectElement).value),
+    ).toEqual(["all", "all", "all"]);
   });
 
-  it("сбрасывает поиск при смене сайта и после отзыва с повторной выдачей", async () => {
+  it("сбрасывает поиск и фильтры при смене сайта и после отзыва с повторной выдачей", async () => {
     browserMocks.sendMessage.mockResolvedValue({
       ...snapshot("ready", [record]),
       documentId: "main",
@@ -494,6 +527,9 @@ describe("popup site access", () => {
       pattern: "https://other.example/*",
       label: "https://other.example",
     };
+    fireEvent.change(screen.getByRole("combobox", { name: "Фрейм" }), {
+      target: { value: "2" },
+    });
     browserMocks.sendMessage.mockResolvedValue({
       ...snapshot("ready", [record]),
       site: otherSite,
@@ -501,10 +537,19 @@ describe("popup site access", () => {
     });
     await notify();
     expect((screen.getByRole("searchbox") as HTMLInputElement).value).toBe("");
+    expect(
+      screen
+        .getAllByRole("combobox")
+        .map((element) => (element as HTMLSelectElement).value),
+    ).toEqual(["all", "all", "all"]);
     fireEvent.change(screen.getByRole("searchbox"), {
       target: { value: "click" },
     });
     browserMocks.sendMessage.mockResolvedValue(snapshot("no-access"));
+    fireEvent.change(
+      screen.getByRole("combobox", { name: "Источник регистрации" }),
+      { target: { value: "unknown" } },
+    );
     fireEvent.click(screen.getByRole("button", { name: "Отозвать доступ" }));
     await screen.findByRole("button", { name: "Разрешить для этого сайта" });
     expect(screen.queryByRole("searchbox")).toBeNull();
@@ -514,6 +559,70 @@ describe("popup site access", () => {
     });
     await notify();
     expect((screen.getByRole("searchbox") as HTMLInputElement).value).toBe("");
+    expect(
+      screen
+        .getAllByRole("combobox")
+        .map((element) => (element as HTMLSelectElement).value),
+    ).toEqual(["all", "all", "all"]);
+  });
+
+  it.each(["error", "reload-required", "recovering"] as const)(
+    "сбрасывает фильтры после скрытия панели при status=%s",
+    async (status) => {
+      browserMocks.sendMessage.mockResolvedValue({
+        ...snapshot("ready", [record]),
+        documentId: "same-document",
+      });
+      render(<App />);
+      fireEvent.change(
+        await screen.findByRole("combobox", { name: "Состояние обработчика" }),
+        { target: { value: "removed" } },
+      );
+      browserMocks.sendMessage.mockResolvedValue({
+        ...snapshot(status, [record]),
+        documentId: "same-document",
+      });
+      await notify();
+      expect(screen.queryByRole("combobox")).toBeNull();
+      browserMocks.sendMessage.mockResolvedValue({
+        ...snapshot("ready", [record]),
+        documentId: "same-document",
+      });
+      await notify();
+      expect(
+        screen
+          .getAllByRole("combobox")
+          .map((element) => (element as HTMLSelectElement).value),
+      ).toEqual(["all", "all", "all"]);
+    },
+  );
+
+  it("сбрасывает поиск и фильтры при открытии popup другой вкладки", async () => {
+    browserMocks.sendMessage.mockResolvedValue(snapshot("ready", [record]));
+    const { unmount } = render(<App />);
+    fireEvent.change(await screen.findByRole("searchbox"), {
+      target: { value: "click" },
+    });
+    fireEvent.change(screen.getByRole("combobox", { name: "Фрейм" }), {
+      target: { value: "2" },
+    });
+    unmount();
+    browserMocks.query.mockResolvedValue([
+      { id: 18, url: "https://example.com/other" },
+    ]);
+    browserMocks.sendMessage.mockResolvedValue({
+      ...snapshot("ready", [{ ...record, tabId: 18 }]),
+      tabId: 18,
+    });
+    render(<App />);
+    expect(
+      ((await screen.findByRole("searchbox")) as HTMLInputElement).value,
+    ).toBe("");
+    expect(
+      screen
+        .getAllByRole("combobox")
+        .map((element) => (element as HTMLSelectElement).value),
+    ).toEqual(["all", "all", "all"]);
   });
 
   it("stops readiness polling at its deadline and retries", async () => {

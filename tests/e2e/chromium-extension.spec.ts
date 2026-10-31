@@ -273,6 +273,18 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
             'input[type="search"]',
           )?.value,
           text: popup?.document.body.innerText ?? "",
+          filters: Array.from(
+            popup?.document.querySelectorAll<HTMLSelectElement>(
+              ".results-filters select",
+            ) ?? [],
+            (select) => select.value,
+          ),
+          count: popup?.document
+            .querySelector(".results-count")
+            ?.textContent?.trim(),
+          focusedFilter: Array.from(
+            popup?.document.querySelectorAll(".results-filters select") ?? [],
+          ).findIndex((select) => select === popup?.document.activeElement),
           groups: Array.from(
             popup?.document.querySelectorAll(".results-group h3") ?? [],
             (node) => node.textContent,
@@ -309,7 +321,93 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
         input.dispatchEvent(new Event("input", { bubbles: true }));
       }, query);
 
+    const setFilter = (label: string, value: string) =>
+      control.evaluate(
+        ({ label, value }) => {
+          const popup = (
+            window as unknown as ExtensionWindow
+          ).chrome.extension.getViews({ type: "popup" })[0];
+          const filterLabel = Array.from(
+            popup?.document.querySelectorAll("label") ?? [],
+          ).find((node) => node.textContent === label);
+          const select =
+            filterLabel &&
+            (popup?.document.getElementById(
+              filterLabel.htmlFor,
+            ) as HTMLSelectElement | null);
+          if (
+            !select ||
+            !Array.from(select.options).some((option) => option.value === value)
+          )
+            throw new Error(`Фильтр popup недоступен: ${label}`);
+          Object.getOwnPropertyDescriptor(
+            Object.getPrototypeOf(select),
+            "value",
+          )!.set!.call(select, value);
+          select.dispatchEvent(new Event("change", { bubbles: true }));
+        },
+        { label, value },
+      );
+
     await expect.poll(async () => (await readResults()).query).toBe("");
+    await expect
+      .poll(async () => (await readResults()).filters)
+      .toEqual(["all", "all", "all"]);
+    // Chromium не представляет action popup как Playwright Page.
+    const keyboardSession = await context.newCDPSession(control);
+    const { targetInfo: controlTarget } = await keyboardSession.send(
+      "Target.getTargetInfo",
+    );
+    const { targetInfos } = await keyboardSession.send("Target.getTargets");
+    const popupTarget = targetInfos.find(
+      (target) =>
+        target.targetId !== controlTarget.targetId &&
+        target.url === `chrome-extension://${extensionId}/popup.html`,
+    );
+    expect(popupTarget, "CDP видит настоящий action popup").toBeDefined();
+    const { sessionId: popupSessionId } = await keyboardSession.send(
+      "Target.attachToTarget",
+      { targetId: popupTarget!.targetId, flatten: false },
+    );
+    let keyboardCommandId = 0;
+    const sendPopupCommand = (
+      method: string,
+      params: Record<string, unknown>,
+    ) =>
+      keyboardSession.send("Target.sendMessageToTarget", {
+        sessionId: popupSessionId,
+        message: JSON.stringify({ id: ++keyboardCommandId, method, params }),
+      });
+    await sendPopupCommand("Emulation.setFocusEmulationEnabled", {
+      enabled: true,
+    });
+    await sendPopupCommand("Page.bringToFront", {});
+    await sendPopupCommand("Runtime.evaluate", {
+      expression: 'document.querySelector(".results-filters select").focus()',
+    });
+    await expect.poll(async () => (await readResults()).focusedFilter).toBe(0);
+    await sendPopupCommand("Input.dispatchKeyEvent", {
+      type: "char",
+      text: "У",
+      unmodifiedText: "У",
+    });
+    await expect
+      .poll(async () => (await readResults()).filters[0])
+      .toBe("removed");
+    for (const type of ["rawKeyDown", "keyUp"]) {
+      await sendPopupCommand("Input.dispatchKeyEvent", {
+        type,
+        key: "Tab",
+        code: "Tab",
+        windowsVirtualKeyCode: 9,
+      });
+    }
+    await expect.poll(async () => (await readResults()).focusedFilter).toBe(1);
+    await setFilter("Состояние обработчика", "all");
+    await keyboardSession.send("Target.detachFromTarget", {
+      sessionId: popupSessionId,
+    });
+    await keyboardSession.detach();
     await expect
       .poll(async () =>
         (await snapshot()).records.some(
@@ -451,6 +549,11 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
     const pointerRecord = newRecords.find(
       (record) => record.eventType === "pointerdown",
     )!;
+    await setSearch("pointerdown");
+    await setFilter("Состояние обработчика", "active");
+    await setFilter("Источник регистрации", "add-event-listener");
+    await setFilter("Фрейм", "0");
+    await expect.poll(async () => (await readResults()).cards.length).toBe(1);
     await fixture.evaluate(() => {
       const probe = (window as CatalogProbeWindow).__listenerLensCatalogProbe!;
       probe.target.removeEventListener("pointerdown", probe.listener, true);
@@ -465,6 +568,11 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
         ),
       )
       .toBe(true);
+    await expect.poll(async () => (await readResults()).cards.length).toBe(0);
+    await expect
+      .poll(async () => (await readResults()).text)
+      .toContain("По выбранным фильтрам ничего не найдено");
+    await setFilter("Состояние обработчика", "removed");
     await setSearch("pointerdown removed");
     await expect
       .poll(async () => (await readResults()).groups)
@@ -472,12 +580,44 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
     expect((await readResults()).cards[0]!.summary).toContain(
       "Удалён (removed)",
     );
-    await clickPopup("Сбросить поиск");
+    expect((await readResults()).cards[0]!.metadata).toContain(
+      pointerRecord.id,
+    );
+    await setFilter("Источник регистрации", "event-handler-property");
+    await expect.poll(async () => (await readResults()).cards.length).toBe(0);
+    await clickPopup("Сбросить фильтры");
     await expect.poll(async () => (await readResults()).query).toBe("");
+    await expect
+      .poll(async () => (await readResults()).filters)
+      .toEqual(["all", "all", "all"]);
+    const childFrameId = frameState.records.find(
+      (record) => record.frameId > 0,
+    )!.frameId;
+    await setFilter("Фрейм", String(childFrameId));
+    await expect
+      .poll(async () => (await readResults()).cards.length)
+      .toBeGreaterThan(0);
+    expect(
+      (await readResults()).cards.every((card) =>
+        card.summary.includes(`· frame ${childFrameId} ·`),
+      ),
+    ).toBe(true);
+    expect((await readResults()).fits).toBe(true);
+    await clickPopup("Сбросить фильтры");
+    await expect
+      .poll(async () => (await readResults()).filters)
+      .toEqual(["all", "all", "all"]);
+    await expect
+      .poll(async () => (await readResults()).count)
+      .toBe(
+        `Показано записей: ${(await snapshot()).records.length} из ${(await snapshot()).records.length}.`,
+      );
     console.debug(
       JSON.stringify({
         scope: "chromium-extension",
-        phase: "расширенный-каталог",
+        phase: "расширенный-каталог-и-фильтры",
+        filters: "lifecycle/source/frame и сброс проверены",
+        keyboard: "type-ahead и Tab проверены",
         registeredCount: newRecords.length,
         removedCount: 1,
         privacy: "проверена",

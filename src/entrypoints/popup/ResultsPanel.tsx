@@ -8,7 +8,12 @@ import {
 } from "react";
 import type { ListenerRecord } from "../../shared/contracts/records";
 import { createLogger } from "../../shared/logger";
-import { projectResults } from "./results";
+import {
+  DEFAULT_RESULT_FILTERS,
+  getResultFrameIds,
+  projectResults,
+  type ResultFilters,
+} from "./results";
 
 const logger = createLogger("popup.results");
 
@@ -132,12 +137,21 @@ export function ResultsPanel({
   partial: boolean;
 }) {
   const [query, setQuery] = useState("");
+  const [filters, setFilters] = useState<ResultFilters>(DEFAULT_RESULT_FILTERS);
   const searchId = useId();
   const titleId = useId();
+  const lifecycleId = useId();
+  const sourceKindId = useId();
+  const frameId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
+  const frameIds = useMemo(() => getResultFrameIds(records), [records]);
+  const activeFilterCount =
+    Number(filters.lifecycle !== "all") +
+    Number(filters.sourceKind !== "all") +
+    Number(filters.frameId !== "all");
   const results = useMemo(
-    () => projectResults(records, query),
-    [records, query],
+    () => projectResults(records, query, filters),
+    [records, query, filters],
   );
 
   useEffect(() => {
@@ -145,8 +159,9 @@ export function ResultsPanel({
       totalCount: results.totalCount,
       matchedCount: results.matchedCount,
       groupCount: results.groups.length,
+      activeFilterCount,
     });
-  }, [results]);
+  }, [results, activeFilterCount]);
 
   return (
     <section className="results-panel" aria-labelledby={titleId}>
@@ -173,6 +188,88 @@ export function ResultsPanel({
           </button>
         )}
       </div>
+      <fieldset className="results-filters">
+        <legend>Фильтры записей</legend>
+        <div className="result-filter">
+          <label htmlFor={lifecycleId}>Состояние обработчика</label>
+          <select
+            id={lifecycleId}
+            value={filters.lifecycle}
+            onChange={(event) =>
+              setFilters({
+                ...filters,
+                lifecycle: event.target.value as ResultFilters["lifecycle"],
+              })
+            }
+          >
+            <option value="all">Все состояния</option>
+            <option value="active">Активен (active)</option>
+            <option value="removed">Удалён (removed)</option>
+            <option value="unknown">Неизвестно (unknown)</option>
+          </select>
+        </div>
+        <div className="result-filter">
+          <label htmlFor={sourceKindId}>Источник регистрации</label>
+          <select
+            id={sourceKindId}
+            value={filters.sourceKind}
+            onChange={(event) =>
+              setFilters({
+                ...filters,
+                sourceKind: event.target.value as ResultFilters["sourceKind"],
+              })
+            }
+          >
+            <option value="all">Все источники</option>
+            <option value="add-event-listener">addEventListener</option>
+            <option value="event-handler-property">Свойство on…</option>
+            <option value="inline-attribute">Inline-атрибут</option>
+            <option value="unknown">Неизвестно</option>
+          </select>
+        </div>
+        <div className="result-filter">
+          <label htmlFor={frameId}>Фрейм</label>
+          <select
+            id={frameId}
+            value={filters.frameId}
+            onChange={(event) =>
+              setFilters({
+                ...filters,
+                frameId:
+                  event.target.value === "all"
+                    ? "all"
+                    : Number(event.target.value),
+              })
+            }
+          >
+            <option value="all">Все фреймы</option>
+            {frameIds.map((id) => (
+              <option key={id} value={id}>
+                {id === 0 ? "Главный фрейм (0)" : `Фрейм ${id}`}
+              </option>
+            ))}
+            {filters.frameId !== "all" &&
+              !frameIds.includes(filters.frameId) && (
+                <option value={filters.frameId}>
+                  Фрейм {filters.frameId} (нет записей)
+                </option>
+              )}
+          </select>
+        </div>
+        {activeFilterCount > 0 && (
+          <button
+            className="secondary"
+            type="button"
+            onClick={() => {
+              setFilters(DEFAULT_RESULT_FILTERS);
+              setQuery("");
+              inputRef.current?.focus();
+            }}
+          >
+            Сбросить фильтры
+          </button>
+        )}
+      </fieldset>
       <p className="results-count" aria-live="polite" aria-atomic="true">
         Показано записей: {results.matchedCount} из {results.totalCount}.
       </p>
@@ -183,7 +280,11 @@ export function ResultsPanel({
             : "Обработчики событий не найдены."}
         </p>
       ) : results.matchedCount === 0 ? (
-        <p>По запросу ничего не найдено.</p>
+        <p>
+          {activeFilterCount > 0
+            ? "По выбранным фильтрам ничего не найдено. Измените фильтры или сбросьте их."
+            : "По запросу ничего не найдено."}
+        </p>
       ) : (
         results.groups.map((group) => (
           <section className="results-group" key={group.eventType}>

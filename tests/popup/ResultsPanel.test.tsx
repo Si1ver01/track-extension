@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   cleanup,
   fireEvent,
@@ -38,6 +38,228 @@ function metadataValue(details: HTMLElement, label: string) {
 }
 
 afterEach(cleanup);
+
+describe("фильтры панели результатов", () => {
+  it("сочетает три фильтра с поиском и различает отдельный и общий сброс", () => {
+    const match = record({
+      id: "removed-frame",
+      lifecycle: "removed",
+      frameId: 2,
+      source: { ...record().source, sourceKind: "event-handler-property" },
+    });
+    render(
+      <ResultsPanel
+        partial={false}
+        records={[
+          record(),
+          match,
+          record({ id: "other-frame", frameId: 20, lifecycle: "removed" }),
+        ]}
+      />,
+    );
+    const lifecycle = screen.getByRole("combobox", {
+      name: "Состояние обработчика",
+    }) as HTMLSelectElement;
+    const source = screen.getByRole("combobox", {
+      name: "Источник регистрации",
+    }) as HTMLSelectElement;
+    const frame = screen.getByRole("combobox", {
+      name: "Фрейм",
+    }) as HTMLSelectElement;
+    const search = screen.getByRole("searchbox") as HTMLInputElement;
+    expect([lifecycle.value, source.value, frame.value]).toEqual([
+      "all",
+      "all",
+      "all",
+    ]);
+    fireEvent.change(search, { target: { value: "click button" } });
+    fireEvent.change(lifecycle, { target: { value: "removed" } });
+    fireEvent.change(source, { target: { value: "event-handler-property" } });
+    fireEvent.change(frame, { target: { value: "2" } });
+    expect(screen.getByText("Показано записей: 1 из 3.")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "click · 1" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Сбросить поиск" }));
+    expect(search.value).toBe("");
+    expect([lifecycle.value, source.value, frame.value]).toEqual([
+      "removed",
+      "event-handler-property",
+      "2",
+    ]);
+    expect(document.activeElement).toBe(search);
+    fireEvent.change(search, { target: { value: "нет-совпадений" } });
+    expect(
+      screen.getByText(/По выбранным фильтрам ничего не найдено/),
+    ).toBeTruthy();
+    expect(screen.getByText("Показано записей: 0 из 3.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Сбросить фильтры" }));
+    expect([lifecycle.value, source.value, frame.value]).toEqual([
+      "all",
+      "all",
+      "all",
+    ]);
+    expect(search.value).toBe("");
+    expect(document.activeElement).toBe(search);
+    expect(screen.getByText("Показано записей: 3 из 3.")).toBeTruthy();
+  });
+
+  it("сохраняет исчезнувший frame выбранным и восстанавливает его выдачу", () => {
+    const main = record();
+    const frameRecord = record({
+      id: "frame",
+      frameId: 2,
+      documentId: "child",
+    });
+    const { rerender } = render(
+      <ResultsPanel
+        partial={false}
+        records={[
+          record({ id: "ten", frameId: 10 }),
+          frameRecord,
+          main,
+          { ...frameRecord, id: "second-child" },
+        ]}
+      />,
+    );
+    const frame = screen.getByRole("combobox", {
+      name: "Фрейм",
+    }) as HTMLSelectElement;
+    expect([...frame.options].map((option) => option.value)).toEqual([
+      "all",
+      "0",
+      "2",
+      "10",
+    ]);
+    fireEvent.change(frame, { target: { value: "2" } });
+    fireEvent.change(screen.getByRole("searchbox"), {
+      target: { value: "click" },
+    });
+    rerender(<ResultsPanel partial={true} records={[main]} />);
+    expect(frame.value).toBe("2");
+    expect(frame.selectedOptions[0]!.textContent).toBe("Фрейм 2 (нет записей)");
+    expect(screen.getByText("Показано записей: 0 из 1.")).toBeTruthy();
+    expect((screen.getByRole("searchbox") as HTMLInputElement).value).toBe(
+      "click",
+    );
+    rerender(<ResultsPanel partial={true} records={[]} />);
+    expect(frame.value).toBe("2");
+    expect(screen.getByText("Пока нет данных об обработчиках.")).toBeTruthy();
+    rerender(<ResultsPanel partial={false} records={[main, frameRecord]} />);
+    expect(frame.value).toBe("2");
+    expect(frame.selectedOptions[0]!.textContent).toBe("Фрейм 2");
+    expect(screen.getByText("Показано записей: 1 из 2.")).toBeTruthy();
+  });
+
+  it("фильтрует неизвестный источник отдельно от неизвестного lifecycle", () => {
+    const { container } = render(
+      <ResultsPanel
+        partial={false}
+        records={[
+          record({
+            id: "missing-source",
+            source: { path: "button#unknown", target: "element" },
+          }),
+          record({ id: "unknown-lifecycle", lifecycle: "unknown" }),
+        ]}
+      />,
+    );
+    fireEvent.change(
+      screen.getByRole("combobox", { name: "Источник регистрации" }),
+      { target: { value: "unknown" } },
+    );
+    expect(
+      metadataValue(
+        container.querySelector("details")!,
+        "Идентификатор записи (id)",
+      ),
+    ).toBe("missing-source");
+    fireEvent.change(
+      screen.getByRole("combobox", { name: "Состояние обработчика" }),
+      { target: { value: "unknown" } },
+    );
+    expect(screen.getByText("Показано записей: 0 из 2.")).toBeTruthy();
+  });
+
+  it("обновляет выдачу при удалении обработчика, сохраняя выбранный фильтр", () => {
+    const current = record();
+    const { container, rerender } = render(
+      <ResultsPanel partial={false} records={[current]} />,
+    );
+    const lifecycle = screen.getByRole("combobox", {
+      name: "Состояние обработчика",
+    }) as HTMLSelectElement;
+    fireEvent.change(lifecycle, { target: { value: "active" } });
+    const details = container.querySelector("details")!;
+    fireEvent.click(details.querySelector("summary")!);
+    rerender(
+      <ResultsPanel
+        partial={true}
+        records={[{ ...current, description: "Обновлённое описание" }]}
+      />,
+    );
+    expect(container.querySelector("details")).toBe(details);
+    expect(details.open).toBe(true);
+    rerender(
+      <ResultsPanel
+        partial={true}
+        records={[{ ...current, lifecycle: "removed" }]}
+      />,
+    );
+    expect(lifecycle.value).toBe("active");
+    expect(container.querySelector("details")).toBeNull();
+    fireEvent.change(lifecycle, { target: { value: "removed" } });
+    expect(
+      metadataValue(
+        container.querySelector("details")!,
+        "Идентификатор записи (id)",
+      ),
+    ).toBe(current.id);
+  });
+
+  it("пишет в DEBUG только агрегаты без запроса и метаданных", () => {
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
+    try {
+      render(
+        <ResultsPanel
+          partial={false}
+          records={[
+            record({
+              documentId: "private-document",
+              source: { target: "element", path: "private-path" },
+            }),
+          ]}
+        />,
+      );
+      fireEvent.change(screen.getByRole("searchbox"), {
+        target: { value: "private-query" },
+      });
+      fireEvent.change(screen.getByRole("combobox", { name: "Фрейм" }), {
+        target: { value: "0" },
+      });
+      expect(debug).toHaveBeenCalled();
+      for (const [message, context] of debug.mock.calls) {
+        expect(message).toBe("[popup.results] Обновлены результаты");
+        expect(Object.keys(context as object).sort()).toEqual([
+          "activeFilterCount",
+          "groupCount",
+          "matchedCount",
+          "totalCount",
+        ]);
+        expect(
+          Object.values(context as object).every(
+            (value) => typeof value === "number",
+          ),
+        ).toBe(true);
+      }
+      expect(debug.mock.calls.at(-1)?.[1]).toMatchObject({
+        activeFilterCount: 1,
+        totalCount: 1,
+        matchedCount: 0,
+      });
+    } finally {
+      debug.mockRestore();
+    }
+  });
+});
 
 describe("панель результатов popup", () => {
   it("группирует записи по событию и фильтрует метаданные с возможностью сброса", () => {

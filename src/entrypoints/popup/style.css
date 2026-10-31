@@ -60,6 +60,7 @@ button:disabled {
 
 button:focus-visible,
 input:focus-visible,
+select:focus-visible,
 summary:focus-visible,
 [role="status"]:focus-visible {
   outline: 2px solid #2155cd;
@@ -96,7 +97,8 @@ li {
   font-weight: 600;
 }
 
-.results-search input {
+.results-search input,
+.result-filter select {
   width: 100%;
   min-width: 0;
   padding: 8px;
@@ -107,8 +109,29 @@ li {
   font: inherit;
 }
 
-.results-search button {
+.results-search button,
+.results-filters button {
   justify-self: start;
+}
+
+.results-filters {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  margin: 12px 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.results-filters legend {
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.result-filter {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
 }
 
 .results-count {

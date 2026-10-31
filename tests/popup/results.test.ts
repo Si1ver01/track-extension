@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { projectResults } from "../../src/entrypoints/popup/results";
+import {
+  DEFAULT_RESULT_FILTERS,
+  getResultFrameIds,
+  projectResults,
+} from "../../src/entrypoints/popup/results";
 import type { ListenerRecord } from "../../src/shared/contracts/records";
 
 function record(overrides: Partial<ListenerRecord> = {}): ListenerRecord {
@@ -24,6 +28,125 @@ function record(overrides: Partial<ListenerRecord> = {}): ListenerRecord {
     ...overrides,
   };
 }
+
+describe("Точные фильтры результатов popup", () => {
+  it.each(["active", "removed", "unknown"] as const)(
+    "оставляет только lifecycle=%s",
+    (lifecycle) => {
+      const records = ["active", "removed", "unknown"].map((value) =>
+        record({ lifecycle: value as ListenerRecord["lifecycle"] }),
+      );
+      const result = projectResults(records, "", {
+        ...DEFAULT_RESULT_FILTERS,
+        lifecycle,
+      });
+      expect(result.totalCount).toBe(3);
+      expect(result.matchedCount).toBe(1);
+      expect(result.groups[0]!.records[0]!.lifecycle).toBe(lifecycle);
+    },
+  );
+
+  it.each([
+    "add-event-listener",
+    "event-handler-property",
+    "inline-attribute",
+    "unknown",
+  ] as const)("оставляет только источник %s", (sourceKind) => {
+    const records = [
+      record(),
+      record({
+        source: { ...record().source, sourceKind: "event-handler-property" },
+      }),
+      record({
+        source: { ...record().source, sourceKind: "inline-attribute" },
+      }),
+      record({ source: { path: "button#save", target: "element" } }),
+    ];
+    const result = projectResults(records, "", {
+      ...DEFAULT_RESULT_FILTERS,
+      sourceKind,
+    });
+    expect(result.totalCount).toBe(4);
+    expect(result.matchedCount).toBe(1);
+    expect(result.groups[0]!.records[0]!.source.sourceKind ?? "unknown").toBe(
+      sourceKind,
+    );
+  });
+
+  it.each([0, 2, 20])(
+    "сравнивает frameId=%s точно, включая главный фрейм",
+    (frameId) => {
+      const records = [0, 2, 20].map((id) => record({ frameId: id }));
+      const result = projectResults(records, "", {
+        ...DEFAULT_RESULT_FILTERS,
+        frameId,
+      });
+      expect(result.groups).toEqual([
+        {
+          eventType: "click",
+          records: [records.find((item) => item.frameId === frameId)],
+        },
+      ]);
+      expect(result.matchedCount).toBe(1);
+      expect(result.totalCount).toBe(3);
+    },
+  );
+
+  it("объединяет все фильтры и слова поиска по AND, сохраняя исходные записи", () => {
+    const match = record({ frameId: 0, lifecycle: "removed" });
+    Object.freeze(match.source);
+    Object.freeze(match);
+    const records = Object.freeze([
+      record({ frameId: 0 }),
+      match,
+      record({ frameId: 1, lifecycle: "removed" }),
+      record({
+        frameId: 0,
+        lifecycle: "removed",
+        source: { ...match.source, sourceKind: "inline-attribute" },
+      }),
+      record({
+        frameId: 0,
+        lifecycle: "removed",
+        source: { ...match.source, path: "button#cancel" },
+      }),
+    ]);
+    const filters = Object.freeze({
+      lifecycle: "removed",
+      sourceKind: "add-event-listener",
+      frameId: 0,
+    } as const);
+    expect(projectResults(records, " CLICK #SAVE ", filters)).toEqual({
+      groups: [{ eventType: "click", records: [match] }],
+      totalCount: 5,
+      matchedCount: 1,
+    });
+    expect(projectResults(records, "keydown", filters).matchedCount).toBe(0);
+    expect(projectResults(records, "", { ...filters, frameId: 99 })).toEqual({
+      groups: [],
+      totalCount: 5,
+      matchedCount: 0,
+    });
+    expect(projectResults([], "", filters)).toEqual({
+      groups: [],
+      totalCount: 0,
+      matchedCount: 0,
+    });
+  });
+
+  it("строит уникальные frameId полного снимка в числовом порядке", () => {
+    const records = Object.freeze(
+      [10, 2, 0, 2, 10].map((frameId) => record({ frameId })),
+    );
+    expect(getResultFrameIds(records)).toEqual([0, 2, 10]);
+    expect(getResultFrameIds([])).toEqual([]);
+    expect(DEFAULT_RESULT_FILTERS).toEqual({
+      lifecycle: "all",
+      sourceKind: "all",
+      frameId: "all",
+    });
+  });
+});
 
 describe("Проекция результатов popup", () => {
   it("возвращает пустые группы и нулевые счётчики без записей", () => {

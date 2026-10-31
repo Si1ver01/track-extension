@@ -105,6 +105,7 @@ try {
         },
         groups: [...document.querySelectorAll('h3')].map(group => group.textContent.trim()),
         count: document.querySelector('.results-count')?.textContent.trim(),
+        filters: [...document.querySelectorAll('.results-filters select')].map(select => select.value),
         text: document.body.textContent,
         records: [...document.querySelectorAll('details.listener-record')].map(record => ({
           eventType: record.querySelector('.record-event')?.textContent.trim(),
@@ -122,6 +123,17 @@ try {
       Object.getOwnPropertyDescriptor(popup.HTMLInputElement.prototype, 'value').set.call(input, arguments[0]);
       input.dispatchEvent(new popup.Event('input', {bubbles: true}));`,
       [query],
+    );
+  }
+  async function filterPopup(label, value) {
+    await api(
+      `const popup = browser.extension.getViews({type: 'popup'})[0];
+      const label = [...popup.document.querySelectorAll('label')].find(node => node.textContent === arguments[0]);
+      const select = label && popup.document.getElementById(label.htmlFor);
+      if (!select || ![...select.options].some(option => option.value === arguments[1])) throw new Error('Фильтр настоящего popup недоступен');
+      Object.getOwnPropertyDescriptor(popup.HTMLSelectElement.prototype, 'value').set.call(select, arguments[1]);
+      select.dispatchEvent(new popup.Event('change', {bubbles: true}));`,
+      [label, value],
     );
   }
   const fixture = await api(
@@ -476,6 +488,15 @@ try {
   const pointerRecord = newRecords.find(
     (record) => record.eventType === "pointerdown",
   );
+  await searchPopup("pointerdown");
+  await filterPopup("Состояние обработчика", "active");
+  await filterPopup("Источник регистрации", "add-event-listener");
+  await filterPopup("Фрейм", "0");
+  await poll(
+    popupResults,
+    (results) => results?.records.length === 1,
+    "Firefox не применил пересечение фильтров",
+  );
   await api(
     `return browser.scripting.executeScript({
       target: {tabId: arguments[0], frameIds: [0]}, world: 'MAIN',
@@ -497,6 +518,14 @@ try {
       ),
     "Firefox не сохранил lifecycle removed для pointerdown",
   );
+  await poll(
+    popupResults,
+    (results) =>
+      results?.records.length === 0 &&
+      results.text.includes("По выбранным фильтрам ничего не найдено"),
+    "Firefox не обновил выдачу после удаления активного обработчика",
+  );
+  await filterPopup("Состояние обработчика", "removed");
   await searchPopup("pointerdown removed");
   const removedResults = await poll(
     popupResults,
@@ -508,18 +537,62 @@ try {
     "Firefox не показал удалённый pointerdown в настоящем popup",
   );
   assert.deepEqual(removedResults.groups, ["pointerdown · 1"]);
-  await api(`const popup = browser.extension.getViews({type: 'popup'})[0];
-    [...popup.document.querySelectorAll('button')]
-      .find(button => button.textContent.trim() === 'Сбросить поиск').click();`);
+  assert.equal(
+    removedResults.records[0].metadata["Идентификатор записи (id)"],
+    pointerRecord.id,
+  );
+  await filterPopup("Источник регистрации", "event-handler-property");
   await poll(
     popupResults,
-    (results) => results?.search?.value === "",
-    "Firefox не сбросил поиск после проверки lifecycle",
+    (results) => results?.records.length === 0,
+    "Firefox не отфильтровал источник регистрации",
+  );
+  await api(`const popup = browser.extension.getViews({type: 'popup'})[0];
+    [...popup.document.querySelectorAll('button')]
+      .find(button => button.textContent.trim() === 'Сбросить фильтры').click();`);
+  await poll(
+    popupResults,
+    (results) =>
+      results?.search?.value === "" &&
+      results.filters.every((value) => value === "all"),
+    "Firefox не сбросил поиск и фильтры после проверки lifecycle",
+  );
+  const childFrameId = frameState.records.find(
+    (record) => record.frameId > 0,
+  ).frameId;
+  await filterPopup("Фрейм", String(childFrameId));
+  const childResults = await poll(
+    popupResults,
+    (results) =>
+      results?.records.length > 0 &&
+      results.records.every(
+        (record) => record.metadata["Фрейм (frameId)"] === String(childFrameId),
+      ),
+    "Firefox не показал точную выборку фрейма",
+  );
+  assert.ok(
+    childResults.records.every(
+      (record) => record.metadata["Фрейм (frameId)"] === String(childFrameId),
+    ),
+  );
+  await api(`const popup = browser.extension.getViews({type: 'popup'})[0];
+    [...popup.document.querySelectorAll('button')]
+      .find(button => button.textContent.trim() === 'Сбросить фильтры').click();`);
+  const filterResetResults = await poll(
+    popupResults,
+    (results) => results?.filters.every((value) => value === "all"),
+    "Firefox не сбросил фильтр фрейма",
+  );
+  const filterResetCount = (await snapshot(fixture.id)).records.length;
+  assert.equal(
+    filterResetResults.count,
+    `Показано записей: ${filterResetCount} из ${filterResetCount}.`,
   );
   console.debug(
     JSON.stringify({
       scope: "firefox-extension",
-      phase: "расширенный-каталог",
+      phase: "расширенный-каталог-и-фильтры",
+      filters: "lifecycle/source/frame и сброс проверены",
       registeredCount: newRecords.length,
       removedCount: 1,
       privacy: "проверена",
