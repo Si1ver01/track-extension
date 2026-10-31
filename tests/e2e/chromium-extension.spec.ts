@@ -560,10 +560,26 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
     await setFilter("Фрейм", "0");
     await expect.poll(async () => (await readResults()).cards.length).toBe(1);
     await clickPopup("Запомнить снимок");
+    await expect.poll(popupText).toContain("Заменить базовый снимок");
+    await control.evaluate(() =>
+      (window as unknown as ExtensionWindow).chrome.extension
+        .getViews({ type: "popup" })[0]!
+        .close(),
+    );
+    await expect.poll(popupText).toBe("");
     await fixture.evaluate(() => {
       const probe = (window as CatalogProbeWindow).__listenerLensCatalogProbe!;
       probe.target.removeEventListener("pointerdown", probe.listener, true);
     });
+    await worker.evaluate(() =>
+      (globalThis as unknown as ExtensionWindow).chrome.action.openPopup(),
+    );
+    await expect.poll(popupText).toContain("Заменить базовый снимок");
+    await expect.poll(popupText).toContain("active → removed");
+    await setSearch("pointerdown");
+    await setFilter("Состояние обработчика", "active");
+    await setFilter("Источник регистрации", "add-event-listener");
+    await setFilter("Фрейм", "0");
     await expect
       .poll(async () =>
         (await snapshot()).records.some(

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import browser from "webextension-polyfill";
 import type {
+  ComparisonBaseline,
+  ComparisonBaselineResult,
   SiteAccessSnapshot,
   SiteCoverage,
 } from "../../shared/contracts/site-access";
@@ -66,6 +68,9 @@ function isSnapshot(
     typeof candidate.status === "string" &&
     statuses.has(candidate.status) &&
     Array.isArray(candidate.records) &&
+    (candidate.baseline === undefined ||
+      (isBaseline(candidate.baseline) &&
+        candidate.baseline.documentId === candidate.documentId)) &&
     isCoverage(candidate.coverage) &&
     (candidate.documentId === undefined ||
       (typeof candidate.documentId === "string" &&
@@ -73,6 +78,28 @@ function isSnapshot(
     (candidate.site === null ||
       (typeof candidate.site?.pattern === "string" &&
         typeof candidate.site.label === "string"))
+  );
+}
+
+function isBaseline(value: unknown): value is ComparisonBaseline {
+  if (!value || typeof value !== "object") return false;
+  const baseline = value as Partial<ComparisonBaseline>;
+  return (
+    typeof baseline.documentId === "string" &&
+    baseline.documentId.length > 0 &&
+    Array.isArray(baseline.records) &&
+    typeof baseline.capturedAt === "number" &&
+    Number.isFinite(baseline.capturedAt) &&
+    typeof baseline.partial === "boolean"
+  );
+}
+
+function isBaselineResult(value: unknown): value is ComparisonBaselineResult {
+  return Boolean(
+    value &&
+    typeof value === "object" &&
+    "baseline" in value &&
+    (value.baseline === null || isBaseline(value.baseline)),
   );
 }
 
@@ -85,6 +112,7 @@ export function useSiteAccess() {
   const tabId = useRef<number | null>(null);
   const action = useRef<PendingAction>(null);
   const version = useRef(0);
+  const baselinePending = useRef(false);
 
   const acceptSnapshot = useCallback((next: SiteAccessSnapshot) => {
     current.current = next;
@@ -99,7 +127,7 @@ export function useSiteAccess() {
   }, []);
 
   const refresh = useCallback(async () => {
-    if (!mounted.current || action.current) return;
+    if (!mounted.current || action.current || baselinePending.current) return;
     const requestVersion = ++version.current;
     try {
       if (tabId.current === null) {
@@ -298,6 +326,59 @@ export function useSiteAccess() {
     void refresh();
   };
 
+  const changeBaseline = async (capture: boolean): Promise<boolean> => {
+    const target = current.current;
+    if (
+      !target?.documentId ||
+      action.current ||
+      baselinePending.current ||
+      (target.status !== "ready" && target.status !== "limited")
+    )
+      return false;
+    baselinePending.current = true;
+    const requestVersion = ++version.current;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const response: unknown = await Promise.race([
+        browser.runtime.sendMessage({
+          type: capture
+            ? "set-comparison-baseline"
+            : "clear-comparison-baseline",
+          tabId: target.tabId,
+          documentId: target.documentId,
+        }),
+        new Promise<undefined>((resolve) => {
+          timer = setTimeout(() => resolve(undefined), 4000);
+        }),
+      ]);
+      const next = current.current;
+      if (
+        !mounted.current ||
+        requestVersion !== version.current ||
+        action.current ||
+        !next ||
+        next.tabId !== target.tabId ||
+        next.documentId !== target.documentId ||
+        (next.status !== "ready" && next.status !== "limited") ||
+        !isBaselineResult(response) ||
+        (response.baseline !== null &&
+          response.baseline.documentId !== target.documentId)
+      )
+        return false;
+      acceptSnapshot({ ...next, baseline: response.baseline ?? undefined });
+      return true;
+    } catch {
+      logger.warn("Не удалось изменить базовый снимок", {
+        code: "BASELINE_FAILED",
+      });
+      return false;
+    } finally {
+      clearTimeout(timer);
+      baselinePending.current = false;
+      void refresh();
+    }
+  };
+
   const reveal = async (record: ListenerRecord): Promise<RevealResult> => {
     const target = current.current;
     if (
@@ -344,5 +425,15 @@ export function useSiteAccess() {
     }
   };
 
-  return { snapshot, pending, issue, grant, reload, revoke, retry, reveal };
+  return {
+    snapshot,
+    pending,
+    issue,
+    grant,
+    reload,
+    revoke,
+    retry,
+    reveal,
+    changeBaseline,
+  };
 }

@@ -1,6 +1,8 @@
 import type browser from "webextension-polyfill";
 import { isListenerMessage } from "../shared/contracts/records";
 import type {
+  ComparisonBaseline,
+  ComparisonBaselineResult,
   SiteAccessSnapshot,
   SiteCoverageReason,
   SiteScope,
@@ -13,6 +15,7 @@ import {
   sanitizeListenerRecord,
 } from "../shared/records/sanitize";
 import { MAX_COLLECTOR_RECORDS } from "../shared/contracts/collector";
+import { copySnapshotRecords } from "../shared/records/snapshot";
 import { isRevealResult, type RevealResult } from "../shared/contracts/reveal";
 import {
   addRecord,
@@ -51,6 +54,7 @@ interface Session {
 }
 const logger = createLogger("background.site-access");
 const scriptPrefix = "listener-lens-site-";
+export const MAX_COMPARISON_BASELINES = 8;
 function registrationId(pattern: string) {
   // The exact pattern is encoded without exposing page paths or relying on a hash collision.
   return (
@@ -74,6 +78,7 @@ export class SiteAccessController {
   private queue: Promise<void> = Promise.resolve();
   private registrationFailed = false;
   private recoveries = new Map<number, Promise<void>>();
+  private baselines = new Map<number, ComparisonBaseline>();
   constructor(private api: SiteAccessApi) {}
   private scopeVersion(pattern: string) {
     return `${this.broadRevocations}:${this.scopeGenerations.get(pattern) ?? 0}`;
@@ -183,6 +188,7 @@ export class SiteAccessController {
     void this.stopPatterns(patterns).then(() => this.reconcile());
   }
   resetTab(tabId: number) {
+    this.baselines.delete(tabId);
     for (const [key, session] of this.sessions)
       if (session.tabId === tabId) this.sessions.delete(key);
     for (const [key, claim] of this.claims)
@@ -201,6 +207,8 @@ export class SiteAccessController {
     this.resetTab(tabId);
   }
   private async stopPatterns(patterns: Set<string>) {
+    // Снимки могут включать фреймы с отдельным разрешением.
+    this.baselines.clear();
     const affected = [...this.sessions.values()].filter((session) =>
       patterns.has(session.pattern),
     );
@@ -286,6 +294,9 @@ export class SiteAccessController {
       if (!main.ready)
         return { tabId, site, status: "recovering", records: [] };
       const state = getTabState(tabId);
+      const baseline = this.baselines.get(tabId);
+      if (baseline && baseline.documentId !== main.documentId)
+        this.baselines.delete(tabId);
       const partial = [...this.sessions.values()].some(
         (session) =>
           session.tabId === tabId && (session.partial || session.failed),
@@ -304,6 +315,14 @@ export class SiteAccessController {
         status: reasons.length > 0 ? "limited" : "ready",
         records: state.records,
         documentId: main.documentId,
+        ...(baseline?.documentId === main.documentId
+          ? {
+              baseline: {
+                ...baseline,
+                records: copySnapshotRecords(baseline.records),
+              },
+            }
+          : {}),
         ...(reasons.length > 0
           ? {
               reason: reasons[0],
@@ -366,6 +385,7 @@ export class SiteAccessController {
               !response.installed)
           ) {
             this.sessions.delete(key);
+            if (session.frameId === 0) this.baselines.delete(tabId);
             resetContext(tabId, session.documentId);
             const main = this.sessions.get(frameKey(tabId, 0));
             if (main) main.partial = true;
@@ -446,6 +466,8 @@ export class SiteAccessController {
     const existing = this.sessions.get(key);
     if (existing?.documentId === documentId && message.resume !== true)
       return { allowed: true, token: existing.token, pattern: site.pattern };
+    if (frameId === 0 && this.baselines.get(tabId)?.documentId !== documentId)
+      this.baselines.delete(tabId);
     if (existing && existing.documentId !== documentId) {
       if (frameId === 0) resetTabState(tabId);
       else resetContext(tabId, existing.documentId);
@@ -472,16 +494,62 @@ export class SiteAccessController {
     this.notify(tabId);
     return { allowed: true, token: session.token, pattern: site.pattern };
   }
+  private isPopupSender(sender: CollectorSender) {
+    return (
+      !sender.tab &&
+      sender.id === this.api.runtime.id &&
+      sender.url === this.api.runtime.getURL("popup.html")
+    );
+  }
+
+  private async changeBaseline(
+    message: Record<string, unknown>,
+    sender: CollectorSender,
+  ): Promise<ComparisonBaselineResult | undefined> {
+    if (
+      !this.isPopupSender(sender) ||
+      !Number.isSafeInteger(message.tabId) ||
+      (message.tabId as number) < 0 ||
+      !safeMetadataId(message.documentId)
+    )
+      return undefined;
+    const tabId = message.tabId as number;
+    const main = this.sessions.get(frameKey(tabId, 0));
+    if (!main || main.documentId !== message.documentId) return undefined;
+    const generation = this.generation;
+    const snapshot = await this.snapshot(tabId);
+    if (
+      generation !== this.generation ||
+      this.sessions.get(frameKey(tabId, 0)) !== main ||
+      snapshot.documentId !== message.documentId ||
+      (snapshot.status !== "ready" && snapshot.status !== "limited")
+    )
+      return undefined;
+    this.baselines.delete(tabId);
+    if (message.type === "clear-comparison-baseline") return { baseline: null };
+    const baseline: ComparisonBaseline = {
+      documentId: main.documentId,
+      records: copySnapshotRecords(snapshot.records),
+      capturedAt: Date.now(),
+      partial: snapshot.status === "limited",
+    };
+    this.baselines.set(tabId, baseline);
+    if (this.baselines.size > MAX_COMPARISON_BASELINES)
+      this.baselines.delete(this.baselines.keys().next().value!);
+    logger.debug("Базовый снимок сохранён", {
+      tabId,
+      count: baseline.records.length,
+    });
+    return {
+      baseline: { ...baseline, records: copySnapshotRecords(baseline.records) },
+    };
+  }
+
   private async revealTarget(
     message: Record<string, unknown>,
     sender: CollectorSender,
   ): Promise<RevealResult> {
-    if (
-      sender.tab ||
-      sender.id !== this.api.runtime.id ||
-      sender.url !== this.api.runtime.getURL("popup.html")
-    )
-      return { status: "ACCESS_DENIED" };
+    if (!this.isPopupSender(sender)) return { status: "ACCESS_DENIED" };
     if (
       !Number.isSafeInteger(message.tabId) ||
       (message.tabId as number) < 0 ||
@@ -576,6 +644,11 @@ export class SiteAccessController {
   ): Promise<unknown> {
     if (!value || typeof value !== "object") return undefined;
     const message = value as Record<string, unknown>;
+    if (
+      message.type === "set-comparison-baseline" ||
+      message.type === "clear-comparison-baseline"
+    )
+      return this.changeBaseline(message, sender);
     if (message.type === "reveal-listener-target")
       return this.revealTarget(message, sender);
     if (
@@ -688,6 +761,7 @@ export class SiteAccessController {
     ) {
       if (this.sessions.get(frameKey(tabId, frameId)) === session) {
         this.sessions.delete(frameKey(tabId, frameId));
+        if (frameId === 0) this.baselines.delete(tabId);
         resetContext(tabId, session.documentId);
         this.notify(tabId);
       }
@@ -770,6 +844,7 @@ export class SiteAccessController {
         record.reasonCodes.push("RECORD_LIMIT_REACHED");
       addRecord(record);
     } else if (value.type === "context-reset") {
+      if (frameId === 0) this.baselines.delete(tabId);
       if (frameId === 0) resetTabState(tabId);
       else resetContext(tabId, session.documentId);
       this.sessions.delete(frameKey(tabId, frameId));

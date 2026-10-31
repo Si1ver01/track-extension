@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   SiteAccessController,
+  MAX_COMPARISON_BASELINES,
   type CollectorSender,
   type SiteAccessApi,
 } from "../../src/background/site-access";
@@ -179,6 +180,124 @@ describe("persistent site access", () => {
     test.api.tabs.sendMessage.mockClear();
     return { ...test, request };
   }
+
+  const baselineRequest = {
+    type: "set-comparison-baseline",
+    tabId: 10,
+    documentId: "native-a",
+  };
+
+  it("сохраняет независимый baseline из подтверждённых записей и отдаёт его при повторном открытии popup", async () => {
+    const { controller } = await revealFixture();
+    const result = await controller.handleMessage(
+      {
+        ...baselineRequest,
+        records: [{ payload: "forged" }],
+      },
+      popupSender,
+    );
+    expect(result).toEqual({
+      baseline: expect.objectContaining({
+        documentId: "native-a",
+        records: [expect.objectContaining({ lifecycle: "active" })],
+      }),
+    });
+    const before = await controller.snapshot(10);
+    before.baseline!.records[0]!.source.path = "forged";
+    getTabState(10).records[0]!.lifecycle = "removed";
+    const reopened = await controller.snapshot(10);
+    expect(reopened.records[0]!.lifecycle).toBe("removed");
+    expect(reopened.baseline!.records[0]!.lifecycle).toBe("active");
+    expect(reopened.baseline!.records[0]!.source.path).toBe("button");
+    expect(JSON.stringify(reopened.baseline)).not.toContain("forged");
+    expect(
+      await controller.handleMessage(
+        { ...baselineRequest, type: "clear-comparison-baseline" },
+        popupSender,
+      ),
+    ).toEqual({ baseline: null });
+    expect((await controller.snapshot(10)).baseline).toBeUndefined();
+  });
+
+  it("не меняет baseline по команде страницы, другого extension view или старого документа", async () => {
+    const { controller } = await revealFixture();
+    for (const untrusted of [
+      sender,
+      {},
+      { ...popupSender, id: "other" },
+      { ...popupSender, tab: { id: 10 } },
+      { ...popupSender, url: "chrome-extension://extension-id/options.html" },
+    ])
+      expect(
+        await controller.handleMessage(baselineRequest, untrusted),
+      ).toBeUndefined();
+    expect(
+      await controller.handleMessage(
+        { ...baselineRequest, documentId: "old" },
+        popupSender,
+      ),
+    ).toBeUndefined();
+    expect((await controller.snapshot(10)).baseline).toBeUndefined();
+  });
+
+  it.each(["reset", "navigate", "revoke", "frame-revoke", "restart"])(
+    "очищает baseline при %s",
+    async (change) => {
+      const { controller, api, setGrants } = await revealFixture();
+      await controller.handleMessage(baselineRequest, popupSender);
+      if (change === "reset") controller.resetTab(10);
+      if (change === "navigate")
+        await ready(controller, { ...sender, documentId: "native-b" }, "own-b");
+      if (change === "revoke" || change === "frame-revoke") {
+        const revoked = change === "revoke" ? pattern : "https://frame.test/*";
+        if (change === "revoke") setGrants([]);
+        controller.permissionsRemoved([revoked]);
+      }
+      const target =
+        change === "restart"
+          ? new SiteAccessController(api as unknown as SiteAccessApi)
+          : controller;
+      expect((await target.snapshot(10)).baseline).toBeUndefined();
+    },
+  );
+
+  it("не сохраняет baseline после навигации или отзыва доступа во время проверки", async () => {
+    for (const change of ["navigate", "revoke"]) {
+      const { controller, api, setGrants } = await revealFixture();
+      const waiting = deferred<{ origins: string[] }>();
+      api.permissions.getAll.mockImplementationOnce(() => waiting.promise);
+      const pending = controller.handleMessage(baselineRequest, popupSender);
+      if (change === "navigate") controller.resetTab(10);
+      else {
+        setGrants([]);
+        controller.permissionsRemoved([pattern]);
+      }
+      waiting.resolve({ origins: [pattern] });
+      expect(await pending).toBeUndefined();
+      expect((await controller.snapshot(10)).baseline).toBeUndefined();
+    }
+  });
+
+  it("вытесняет самый старый baseline после лимита вкладок", async () => {
+    const { controller, setTabs } = fixture();
+    const ids = Array.from(
+      { length: MAX_COMPARISON_BASELINES + 1 },
+      (_, index) => 20 + index,
+    );
+    setTabs(ids.map((id) => ({ id, url: sender.url })));
+    for (const id of ids) {
+      await ready(controller, { ...sender, tab: { id } });
+      await controller.handleMessage(
+        { ...baselineRequest, tabId: id },
+        popupSender,
+      );
+    }
+    expect((await controller.snapshot(ids[0]!)).baseline).toBeUndefined();
+    expect((await controller.snapshot(ids[1]!)).baseline).toBeDefined();
+    ids.forEach((id) => {
+      controller.resetTab(id);
+    });
+  });
 
   it.each([0, 2])(
     "подсвечивает запись точного frame=%s с collectorDocumentId вместо native ID",

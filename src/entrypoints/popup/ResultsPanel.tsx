@@ -7,7 +7,10 @@ import {
   type ReactNode,
 } from "react";
 import type { ListenerRecord } from "../../shared/contracts/records";
-import type { SiteCoverage } from "../../shared/contracts/site-access";
+import type {
+  ComparisonBaseline,
+  SiteCoverage,
+} from "../../shared/contracts/site-access";
 import { createLogger } from "../../shared/logger";
 import { SnapshotExport } from "./SnapshotExport";
 import { SnapshotComparison } from "./SnapshotComparison";
@@ -147,6 +150,8 @@ export function ResultsPanel({
   documentId,
   onRefresh,
   onReveal,
+  baseline,
+  onBaselineChange,
 }: {
   records: ListenerRecord[];
   partial: boolean;
@@ -154,6 +159,8 @@ export function ResultsPanel({
   documentId?: string;
   onRefresh?: () => void;
   onReveal?: RevealAction;
+  baseline?: ComparisonBaseline | null;
+  onBaselineChange?: (capture: boolean) => Promise<boolean>;
 }) {
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState<ResultFilters>(DEFAULT_RESULT_FILTERS);
@@ -301,6 +308,8 @@ export function ResultsPanel({
         records={records}
         context={{ partial, coverage, documentId }}
         onRefresh={onRefresh}
+        baseline={baseline ?? null}
+        onBaselineChange={onBaselineChange}
       />
       {results.totalCount === 0 ? (
         <p>

@@ -84,6 +84,28 @@ async function notify(tabId = 17) {
   await act(async () => listener({ type: "site-access-updated", tabId }));
 }
 
+async function captureBaseline(current: SiteAccessSnapshot) {
+  const baseline = {
+    documentId: current.documentId!,
+    records: structuredClone(current.records),
+    capturedAt: 1,
+    partial: current.status === "limited",
+  };
+  browserMocks.sendMessage.mockResolvedValue({ ...current, baseline });
+  browserMocks.sendMessage.mockResolvedValueOnce({ baseline });
+  fireEvent.click(screen.getByRole("button", { name: "Запомнить снимок" }));
+  await waitFor(() =>
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Заменить базовый снимок",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(false),
+  );
+  return baseline;
+}
+
 describe("popup site access", () => {
   beforeEach(() => {
     Object.values(browserMocks).forEach((mock) => mock.mockReset());
@@ -474,6 +496,63 @@ describe("popup site access", () => {
     expect(screen.queryByText("Ищем элемент…")).toBeNull();
   });
 
+  it("восстанавливает сравнение после закрытия popup без отправки записей из UI", async () => {
+    const before = {
+      ...snapshot("ready", [record]),
+      documentId: "main-document",
+    };
+    browserMocks.sendMessage.mockResolvedValue(before);
+    const popup = render(<App />);
+    await screen.findByRole("searchbox");
+    const baseline = await captureBaseline(before);
+    expect(browserMocks.sendMessage).toHaveBeenCalledWith({
+      type: "set-comparison-baseline",
+      tabId: 17,
+      documentId: "main-document",
+    });
+    popup.unmount();
+    browserMocks.sendMessage.mockResolvedValue({
+      ...before,
+      records: [{ ...record, lifecycle: "removed" }],
+      baseline,
+    });
+    render(<App />);
+    expect(await screen.findByText("active → removed")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Заменить базовый снимок" }),
+    ).toBeTruthy();
+  });
+
+  it("отбрасывает ответ сохранения после отзыва доступа", async () => {
+    browserMocks.sendMessage.mockResolvedValue({
+      ...snapshot("ready", [record]),
+      documentId: "main-document",
+    });
+    render(<App />);
+    await screen.findByRole("searchbox");
+    const saving = deferred<unknown>();
+    browserMocks.sendMessage.mockImplementation(async (request) =>
+      request.type === "set-comparison-baseline"
+        ? saving.promise
+        : snapshot("no-access"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Запомнить снимок" }));
+    fireEvent.click(screen.getByRole("button", { name: "Отозвать доступ" }));
+    await screen.findByRole("button", { name: "Разрешить для этого сайта" });
+    await act(async () =>
+      saving.resolve({
+        baseline: {
+          documentId: "main-document",
+          records: [record],
+          capturedAt: 1,
+          partial: false,
+        },
+      }),
+    );
+    expect(screen.queryByRole("searchbox")).toBeNull();
+    expect(screen.queryByText(/Без изменений:/)).toBeNull();
+  });
+
   it("сохраняет поиск и фильтры при обновлении записей и смене полноты в том же документе", async () => {
     const mainRecord = {
       ...record,
@@ -489,7 +568,10 @@ describe("popup site access", () => {
     const search = await screen.findByRole("searchbox", {
       name: "Поиск по метаданным",
     });
-    fireEvent.click(screen.getByRole("button", { name: "Запомнить снимок" }));
+    const baseline = await captureBaseline({
+      ...snapshot("ready", [record]),
+      documentId: "main-document",
+    });
     fireEvent.change(search, { target: { value: "click" } });
     fireEvent.change(
       screen.getByRole("combobox", { name: "Состояние обработчика" }),
@@ -505,12 +587,14 @@ describe("popup site access", () => {
     browserMocks.sendMessage.mockResolvedValue({
       ...snapshot("limited", [record, mainRecord]),
       documentId: "main-document",
+      baseline,
     });
     await notify();
     expect((search as HTMLInputElement).value).toBe("click");
     browserMocks.sendMessage.mockResolvedValue({
       ...snapshot("limited", [record]),
       documentId: "main-document",
+      baseline,
     });
     await notify();
     expect(screen.getByRole("searchbox")).toBe(search);
@@ -534,7 +618,10 @@ describe("popup site access", () => {
     });
     render(<App />);
     const search = await screen.findByRole("searchbox");
-    fireEvent.click(screen.getByRole("button", { name: "Запомнить снимок" }));
+    await captureBaseline({
+      ...snapshot("limited", [record]),
+      documentId: "main-before",
+    });
     fireEvent.change(search, { target: { value: "нет-совпадений" } });
     expect(screen.getByText("По запросу ничего не найдено.")).toBeTruthy();
     fireEvent.change(

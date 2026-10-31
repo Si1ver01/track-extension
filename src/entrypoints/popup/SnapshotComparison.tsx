@@ -1,14 +1,12 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ListenerRecord } from "../../shared/contracts/records";
-import { createLogger } from "../../shared/logger";
+import type { ComparisonBaseline } from "../../shared/contracts/site-access";
 import {
   compareSnapshots,
   copySnapshotRecords,
   recordIdentity,
 } from "./comparison";
 import type { SnapshotContext } from "./snapshots";
-
-const logger = createLogger("popup.baseline");
 
 function RecordLabel({ record }: { record: ListenerRecord }) {
   return (
@@ -23,16 +21,40 @@ export function SnapshotComparison({
   records,
   context,
   onRefresh,
+  baseline,
+  onBaselineChange,
 }: {
   records: ListenerRecord[];
   context: SnapshotContext;
   onRefresh?: () => void;
+  baseline: ComparisonBaseline | null;
+  onBaselineChange?: (capture: boolean) => Promise<boolean>;
 }) {
-  const [baseline, setBaseline] = useState<{
-    records: ListenerRecord[];
-    capturedAt: number;
-    partial: boolean;
-  } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(false);
+  const mounted = useRef(false);
+  const pending = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const changeBaseline = async (capture: boolean) => {
+    if (pending.current || !onBaselineChange) return;
+    pending.current = true;
+    setBusy(true);
+    setError(false);
+    try {
+      const success = await onBaselineChange(capture);
+      if (mounted.current) setError(!success);
+    } catch {
+      if (mounted.current) setError(true);
+    } finally {
+      pending.current = false;
+      if (mounted.current) setBusy(false);
+    }
+  };
   const current = useMemo(() => copySnapshotRecords(records), [records]);
   const comparison = useMemo(
     () => (baseline ? compareSnapshots(baseline.records, current) : null),
@@ -40,24 +62,27 @@ export function SnapshotComparison({
   );
 
   return (
-    <section className="snapshot-tools" aria-label="Сравнение снимков">
+    <section
+      className="snapshot-tools"
+      aria-label="Сравнение снимков"
+      aria-busy={busy}
+    >
       <div className="actions">
         <button
           type="button"
           className="secondary"
-          onClick={() => {
-            setBaseline({
-              records: copySnapshotRecords(records),
-              capturedAt: Date.now(),
-              partial: context.partial,
-            });
-            logger.debug("Базовый снимок сохранён", { count: records.length });
-          }}
+          disabled={busy || !onBaselineChange}
+          onClick={() => void changeBaseline(true)}
         >
           {baseline ? "Заменить базовый снимок" : "Запомнить снимок"}
         </button>
         {onRefresh && (
-          <button type="button" className="secondary" onClick={onRefresh}>
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy}
+            onClick={onRefresh}
+          >
             Обновить снимок
           </button>
         )}
@@ -65,15 +90,18 @@ export function SnapshotComparison({
           <button
             type="button"
             className="secondary"
-            onClick={() => {
-              setBaseline(null);
-              logger.debug("Базовый снимок сброшен");
-            }}
+            disabled={busy || !onBaselineChange}
+            onClick={() => void changeBaseline(false)}
           >
             Сбросить сравнение
           </button>
         )}
       </div>
+      {error && (
+        <p role="alert">
+          Не удалось изменить базовый снимок. Повторите попытку.
+        </p>
+      )}
       {baseline && comparison && (
         <>
           <p className="scope">
@@ -135,7 +163,8 @@ export function SnapshotComparison({
       {!baseline && (
         <p className="scope">
           Запомните снимок, измените страницу и сравните регистрации. Базовый
-          снимок хранится до закрытия popup или смены документа.
+          снимок сохраняется при закрытии popup, но может сброситься, если
+          браузер приостановит работу расширения.
         </p>
       )}
     </section>

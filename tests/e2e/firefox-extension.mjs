@@ -504,6 +504,17 @@ try {
   );
   await api(`const popup = browser.extension.getViews({type: 'popup'})[0];
     [...popup.document.querySelectorAll('button')].find(node => node.textContent.trim() === 'Запомнить снимок').click();`);
+  await poll(
+    popupResults,
+    (results) => results?.text.includes("Заменить базовый снимок"),
+    "Firefox не сохранил базовый снимок",
+  );
+  await api("browser.extension.getViews({type: 'popup'})[0].close();");
+  await poll(
+    () => api("return browser.extension.getViews({type: 'popup'}).length;"),
+    (count) => count === 0,
+    "Firefox не закрыл popup перед изменением страницы",
+  );
   await api(
     `return browser.scripting.executeScript({
       target: {tabId: arguments[0], frameIds: [0]}, world: 'MAIN',
@@ -514,6 +525,16 @@ try {
     });`,
     [fixture.id],
   );
+  await openActionPopup(fixture.id);
+  await poll(
+    popupResults,
+    (results) => results?.text.includes("active → removed"),
+    "Firefox не восстановил сравнение после закрытия popup",
+  );
+  await searchPopup("pointerdown");
+  await filterPopup("Состояние обработчика", "active");
+  await filterPopup("Источник регистрации", "add-event-listener");
+  await filterPopup("Фрейм", "0");
   await poll(
     () => snapshot(fixture.id),
     (state) =>

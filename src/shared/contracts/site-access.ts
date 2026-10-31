@@ -21,6 +21,17 @@ export interface SiteCoverage {
   recordLimit: number;
 }
 
+export interface ComparisonBaseline {
+  documentId: string;
+  records: ListenerRecord[];
+  capturedAt: number;
+  partial: boolean;
+}
+
+export interface ComparisonBaselineResult {
+  baseline: ComparisonBaseline | null;
+}
+
 export interface SiteAccessSnapshot {
   tabId: number;
   site: SiteScope | null;
@@ -29,9 +40,15 @@ export interface SiteAccessSnapshot {
   documentId?: string;
   reason?: string;
   coverage?: SiteCoverage;
+  baseline?: ComparisonBaseline;
 }
 
 export type SiteAccessRequest =
   | { type: "get-site-access"; tabId: number }
   | { type: "activate-site"; tabId: number; pattern: string }
-  | { type: "revoke-site"; tabId: number; pattern: string };
+  | { type: "revoke-site"; tabId: number; pattern: string }
+  | {
+      type: "set-comparison-baseline" | "clear-comparison-baseline";
+      tabId: number;
+      documentId: string;
+    };

@@ -1,6 +1,8 @@
 import type { ListenerRecord } from "../../shared/contracts/records";
 import { createLogger } from "../../shared/logger";
 
+export { copySnapshotRecords } from "../../shared/records/snapshot";
+
 const logger = createLogger("popup.comparison");
 
 export function recordIdentity(record: ListenerRecord) {
@@ -10,35 +12,6 @@ export function recordIdentity(record: ListenerRecord) {
     record.contextKind,
     record.id,
   ]);
-}
-
-export function copySnapshotRecords(records: readonly ListenerRecord[]) {
-  // Копируем полученные от background метаданные без дополнительных полей
-  // и без вызова нормализатора, который пишет контекст каждой записи в DEBUG.
-  return records.map((record): ListenerRecord => ({
-    id: record.id,
-    eventType: record.eventType,
-    description: record.description,
-    tabId: record.tabId,
-    frameId: record.frameId,
-    documentId: record.documentId,
-    contextKind: record.contextKind,
-    browser: record.browser,
-    capturedAt: record.capturedAt,
-    lifecycle: record.lifecycle,
-    source: {
-      target: record.source.target,
-      path: record.source.path,
-      sourceKind: record.source.sourceKind,
-    },
-    listenerOptions: record.listenerOptions && {
-      capture: record.listenerOptions.capture,
-      passive: record.listenerOptions.passive,
-      once: record.listenerOptions.once,
-    },
-    reasonCodes: [...record.reasonCodes],
-    limitations: [],
-  }));
 }
 
 const fields = {
