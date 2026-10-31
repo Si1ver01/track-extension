@@ -3,6 +3,11 @@ import { createReadStream } from "node:fs";
 import { createServer } from "node:http";
 import path from "node:path";
 import {
+  popupRevealProbe,
+  revealProbe,
+  verifyTargetReveal,
+} from "./reveal-targets.mjs";
+import {
   verifyDetectionCoverage,
   verifyRevokedBFCache,
 } from "./detection-coverage.mjs";
@@ -707,6 +712,19 @@ try {
       };
     },
   };
+  await verifyTargetReveal({
+    label: "firefox-extension",
+    run: async (operation) => {
+      const results = await api(
+        `return browser.scripting.executeScript({target: {tabId: arguments[0], frameIds: [0]}, world: 'MAIN', func: ${revealProbe.toString()}, args: [arguments[1]]});`,
+        [fixture.id, operation],
+      );
+      return results[0]?.result;
+    },
+    popup: (args) =>
+      api(`return (${popupRevealProbe.toString()})(arguments[0]);`, [args]),
+    snapshot: () => snapshot(fixture.id),
+  });
   await verifyDetectionCoverage(coverageAdapter);
 
   // Переустановка того же temporary add-on проходит через настоящий update lifecycle.

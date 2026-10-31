@@ -10,6 +10,8 @@ import { installHandlerSurfaces } from "./handler-surfaces";
 import { createLogger } from "../logger";
 import { createId } from "../id";
 import { isSupportedEventType } from "../event-catalog/catalog";
+import { ListenerTargets } from "./targets";
+import { safeMetadataId } from "../records/sanitize";
 
 const logger = createLogger("detection.bridge");
 
@@ -61,8 +63,10 @@ export function installListenerHook(
   const original = EventTarget.prototype.addEventListener;
   const originalRemove = EventTarget.prototype.removeEventListener;
   const getRootNode = Node.prototype.getRootNode;
+  const addWindowListener = window.addEventListener.bind(window);
   const removeWindowListener = window.removeEventListener.bind(window);
   const registry = new ListenerRegistry();
+  const targets = new ListenerTargets();
   const listenerKeys = new WeakMap<object, string>();
   const keyFor = (listener: EventListenerOrEventListenerObject) => {
     if (
@@ -208,6 +212,7 @@ export function installListenerHook(
         },
         message.record!,
       );
+      targets.remember(entry.id, this);
       window.postMessage({ ...message, record: entry }, "*");
     }
     return original.call(this, type, listener, options);
@@ -231,6 +236,7 @@ export function installListenerHook(
       },
     );
     if (!message) return;
+    targets.remember(surface.id, surface.target);
     window.postMessage(
       {
         ...message,
@@ -300,9 +306,40 @@ export function installListenerHook(
   const installedShadow = Element.prototype.attachShadow;
   const installedPush = history.pushState;
   const installedReplace = history.replaceState;
+  const onReveal: EventListener = (event) => {
+    const messageEvent = event as MessageEvent;
+    const message = messageEvent.data;
+    if (
+      !active ||
+      messageEvent.source !== window ||
+      message?.source !== "listener-lens" ||
+      message.type !== "reveal-target" ||
+      message.nonce !== nonce ||
+      message.documentId !== documentId ||
+      !safeMetadataId(message.requestId) ||
+      !safeMetadataId(message.recordId)
+    )
+      return;
+    window.postMessage(
+      {
+        source: "listener-lens",
+        type: "target-revealed",
+        nonce,
+        documentId,
+        requestId: message.requestId,
+        recordId: message.recordId,
+        result: targets.reveal(message.recordId),
+      },
+      "*",
+    );
+  };
+  const onPageHide = () => targets.hide();
+  addWindowListener("message", onReveal);
+  addWindowListener("pagehide", onPageHide);
   return () => {
     if (!active) return;
     active = false;
+    targets.clear();
     surfaces.dispose();
     if (EventTarget.prototype.addEventListener === installedAdd)
       EventTarget.prototype.addEventListener = original;
@@ -315,5 +352,7 @@ export function installListenerHook(
     if (history.replaceState === installedReplace)
       history.replaceState = originalReplaceState;
     removeWindowListener("popstate", onPopState);
+    removeWindowListener("message", onReveal);
+    removeWindowListener("pagehide", onPageHide);
   };
 }

@@ -11,6 +11,7 @@ import type { SiteCoverage } from "../../shared/contracts/site-access";
 import { createLogger } from "../../shared/logger";
 import { SnapshotExport } from "./SnapshotExport";
 import { SnapshotComparison } from "./SnapshotComparison";
+import { RevealTarget, type RevealAction } from "./RevealTarget";
 import {
   DEFAULT_RESULT_FILTERS,
   getResultFrameIds,
@@ -39,7 +40,13 @@ function MetadataRow({
   );
 }
 
-function RecordDetails({ record }: { record: ListenerRecord }) {
+function RecordDetails({
+  record,
+  onReveal,
+}: {
+  record: ListenerRecord;
+  onReveal?: RevealAction;
+}) {
   const lifecycle = {
     active: "Активен (active)",
     removed: "Удалён (removed)",
@@ -57,6 +64,7 @@ function RecordDetails({ record }: { record: ListenerRecord }) {
         <span className="record-description">{record.description}</span>
         <span className="record-lifecycle">{lifecycle}</span>
       </summary>
+      <RevealTarget record={record} onReveal={onReveal} />
       <dl className="record-metadata">
         <MetadataRow label="Цель (target)">{record.source.target}</MetadataRow>
         <MetadataRow label="Путь (path)">{record.source.path}</MetadataRow>
@@ -138,12 +146,14 @@ export function ResultsPanel({
   coverage,
   documentId,
   onRefresh,
+  onReveal,
 }: {
   records: ListenerRecord[];
   partial: boolean;
   coverage?: SiteCoverage;
   documentId?: string;
   onRefresh?: () => void;
+  onReveal?: RevealAction;
 }) {
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState<ResultFilters>(DEFAULT_RESULT_FILTERS);
@@ -319,6 +329,7 @@ export function ResultsPanel({
                   record.id,
                 ])}
                 record={record}
+                onReveal={onReveal}
               />
             ))}
           </section>

@@ -13,6 +13,7 @@ import {
   sanitizeListenerRecord,
 } from "../shared/records/sanitize";
 import { MAX_COLLECTOR_RECORDS } from "../shared/contracts/collector";
+import { isRevealResult, type RevealResult } from "../shared/contracts/reveal";
 import {
   addRecord,
   MAX_TAB_RECORDS,
@@ -28,6 +29,7 @@ export type SiteAccessApi = Pick<
   "permissions" | "scripting" | "tabs" | "runtime"
 >;
 export interface CollectorSender {
+  id?: string;
   tab?: { id?: number };
   frameId?: number;
   documentId?: string;
@@ -470,12 +472,112 @@ export class SiteAccessController {
     this.notify(tabId);
     return { allowed: true, token: session.token, pattern: site.pattern };
   }
+  private async revealTarget(
+    message: Record<string, unknown>,
+    sender: CollectorSender,
+  ): Promise<RevealResult> {
+    if (
+      sender.tab ||
+      sender.id !== this.api.runtime.id ||
+      sender.url !== this.api.runtime.getURL("popup.html")
+    )
+      return { status: "ACCESS_DENIED" };
+    if (
+      !Number.isSafeInteger(message.tabId) ||
+      (message.tabId as number) < 0 ||
+      !Number.isSafeInteger(message.frameId) ||
+      (message.frameId as number) < 0 ||
+      !safeMetadataId(message.recordId) ||
+      !safeMetadataId(message.documentId) ||
+      !safeMetadataId(message.mainDocumentId)
+    )
+      return { status: "REVEAL_FAILED" };
+    const tabId = message.tabId as number;
+    const frameId = message.frameId as number;
+    const main = this.sessions.get(frameKey(tabId, 0));
+    const session = this.sessions.get(frameKey(tabId, frameId));
+    if (
+      !main ||
+      !session ||
+      main.documentId !== message.mainDocumentId ||
+      session.documentId !== message.documentId
+    )
+      return { status: "DOCUMENT_CHANGED" };
+    const findRecord = () =>
+      getTabState(tabId).records.find(
+        (record) =>
+          record.frameId === frameId &&
+          record.documentId === message.documentId &&
+          record.contextKind === message.contextKind &&
+          record.id === message.recordId,
+      );
+    const record = findRecord();
+    if (!record) return { status: "TARGET_UNAVAILABLE" };
+    if (record.source.target !== "element") return { status: "NO_ELEMENT" };
+    const mainVersion = this.scopeVersion(main.pattern);
+    const version = this.scopeVersion(session.pattern);
+    const valid = () =>
+      this.sessions.get(frameKey(tabId, 0)) === main &&
+      this.sessions.get(frameKey(tabId, frameId)) === session &&
+      main.ready &&
+      session.ready &&
+      !main.failed &&
+      !session.failed &&
+      !this.blocked.has(main.pattern) &&
+      !this.blocked.has(session.pattern) &&
+      mainVersion === this.scopeVersion(main.pattern) &&
+      version === this.scopeVersion(session.pattern) &&
+      Boolean(findRecord());
+    try {
+      const grants = await this.grants();
+      if (!grants.has(main.pattern) || !grants.has(session.pattern))
+        return { status: "ACCESS_DENIED" };
+      const site = getSiteScope((await this.api.tabs.get(tabId)).url);
+      if (site?.pattern !== main.pattern || !valid())
+        return { status: "DOCUMENT_CHANGED" };
+      const current = await Promise.all([
+        this.currentCollector(main),
+        session === main
+          ? Promise.resolve(true)
+          : this.currentCollector(session),
+      ]);
+      const stillGranted = await this.grants();
+      if (!stillGranted.has(main.pattern) || !stillGranted.has(session.pattern))
+        return { status: "ACCESS_DENIED" };
+      if (!valid() || current.some((value) => !value))
+        return { status: "DOCUMENT_CHANGED" };
+      const response: unknown = await this.api.tabs.sendMessage(
+        tabId,
+        {
+          type: "reveal-target",
+          documentId: session.collectorDocumentId,
+          recordId: message.recordId,
+        },
+        { frameId },
+      );
+      const finalGrants = await this.grants();
+      if (!finalGrants.has(main.pattern) || !finalGrants.has(session.pattern))
+        return { status: "ACCESS_DENIED" };
+      if (!valid()) return { status: "DOCUMENT_CHANGED" };
+      const result: RevealResult = isRevealResult(response)
+        ? { status: response.status }
+        : { status: "REVEAL_FAILED" };
+      logger.debug("Подсветка завершена", { status: result.status });
+      return result;
+    } catch {
+      logger.warn("Не удалось связаться с целью", { code: "REVEAL_FAILED" });
+      return { status: "REVEAL_FAILED" };
+    }
+  }
+
   async handleMessage(
     value: unknown,
     sender: CollectorSender,
   ): Promise<unknown> {
     if (!value || typeof value !== "object") return undefined;
     const message = value as Record<string, unknown>;
+    if (message.type === "reveal-listener-target")
+      return this.revealTarget(message, sender);
     if (
       message.type === "get-site-access" ||
       message.type === "activate-site" ||

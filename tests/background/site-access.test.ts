@@ -72,11 +72,16 @@ function fixture(origins: string[] = [pattern]) {
               documentId: live.get(`${_id}:${options?.frameId ?? 0}`),
               installed: !stopped.has(`${_id}:${options?.frameId ?? 0}`),
             };
+          if (message.type === "reveal-target") return { status: "REVEALED" };
           return undefined;
         },
       ),
     },
-    runtime: { sendMessage: vi.fn(async () => undefined) },
+    runtime: {
+      id: "extension-id",
+      getURL: (path: string) => `chrome-extension://extension-id/${path}`,
+      sendMessage: vi.fn(async () => undefined),
+    },
   };
   const controller = new SiteAccessController(api as unknown as SiteAccessApi);
   return {
@@ -144,6 +149,155 @@ beforeEach(() => {
 });
 
 describe("persistent site access", () => {
+  const popupSender = {
+    id: "extension-id",
+    url: "chrome-extension://extension-id/popup.html",
+  };
+  async function revealFixture(frameId = 0) {
+    const test = fixture();
+    await ready(test.controller);
+    const context =
+      frameId === 0
+        ? sender
+        : { ...sender, frameId, documentId: "native-child" };
+    const session =
+      frameId === 0
+        ? await start(test.controller)
+        : await ready(test.controller, context, "own-child");
+    const message = record(session.token);
+    await test.controller.handleMessage(message, context);
+    const persisted = getTabState(10).records[0]!;
+    const request = {
+      type: "reveal-listener-target",
+      tabId: 10,
+      frameId,
+      mainDocumentId: "native-a",
+      documentId: persisted.documentId,
+      contextKind: persisted.contextKind,
+      recordId: persisted.id,
+    };
+    test.api.tabs.sendMessage.mockClear();
+    return { ...test, request };
+  }
+
+  it.each([0, 2])(
+    "подсвечивает запись точного frame=%s с collectorDocumentId вместо native ID",
+    async (frameId) => {
+      const { controller, api, request } = await revealFixture(frameId);
+      expect(await controller.handleMessage(request, popupSender)).toEqual({
+        status: "REVEALED",
+      });
+      expect(api.tabs.sendMessage).toHaveBeenCalledWith(
+        10,
+        {
+          type: "reveal-target",
+          documentId: frameId === 0 ? "own-a" : "own-child",
+          recordId: request.recordId,
+        },
+        { frameId },
+      );
+    },
+  );
+
+  it("отклоняет команды не из popup, неверные identity и устаревшие документы", async () => {
+    const { controller, api, request } = await revealFixture(2);
+    for (const untrusted of [
+      sender,
+      { ...popupSender, id: "other" },
+      { ...popupSender, url: "https://example.test/" },
+    ])
+      expect(await controller.handleMessage(request, untrusted)).toEqual({
+        status: "ACCESS_DENIED",
+      });
+    expect(
+      await controller.handleMessage({ ...request, frameId: -1 }, popupSender),
+    ).toEqual({ status: "REVEAL_FAILED" });
+    expect(
+      await controller.handleMessage(
+        { ...request, mainDocumentId: "old-main" },
+        popupSender,
+      ),
+    ).toEqual({ status: "DOCUMENT_CHANGED" });
+    expect(
+      await controller.handleMessage(
+        { ...request, documentId: "old-child" },
+        popupSender,
+      ),
+    ).toEqual({ status: "DOCUMENT_CHANGED" });
+    expect(
+      await controller.handleMessage(
+        { ...request, recordId: "other" },
+        popupSender,
+      ),
+    ).toEqual({ status: "TARGET_UNAVAILABLE" });
+    expect(
+      await controller.handleMessage(
+        { ...request, contextKind: "shadow-root" },
+        popupSender,
+      ),
+    ).toEqual({ status: "TARGET_UNAVAILABLE" });
+    expect(api.tabs.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("не отправляет подсветку без grant или в новый документ", async () => {
+    const { controller, api, request, setGrants, setLive } =
+      await revealFixture();
+    setGrants([]);
+    expect(await controller.handleMessage(request, popupSender)).toEqual({
+      status: "ACCESS_DENIED",
+    });
+    setGrants([pattern]);
+    setLive(10, 0, "new-document");
+    expect(await controller.handleMessage(request, popupSender)).toEqual({
+      status: "DOCUMENT_CHANGED",
+    });
+    expect(
+      api.tabs.sendMessage.mock.calls.some(
+        ([, message]) => message.type === "reveal-target",
+      ),
+    ).toBe(false);
+  });
+
+  it("отменяет подсветку при revoke или навигации во время ожидания", async () => {
+    const { controller, api, request, setGrants } = await revealFixture();
+    const waiting = deferred<{ origins: string[] }>();
+    api.permissions.getAll.mockImplementationOnce(() => waiting.promise);
+    const pending = controller.handleMessage(request, popupSender);
+    setGrants([]);
+    waiting.resolve({ origins: [pattern] });
+    expect(await pending).toEqual({ status: "ACCESS_DENIED" });
+    expect(
+      api.tabs.sendMessage.mock.calls.some(
+        ([, message]) => message.type === "reveal-target",
+      ),
+    ).toBe(false);
+    setGrants([pattern]);
+    const next = deferred<{ origins: string[] }>();
+    api.permissions.getAll.mockImplementationOnce(() => next.promise);
+    const navigating = controller.handleMessage(request, popupSender);
+    controller.resetTab(10);
+    next.resolve({ origins: [pattern] });
+    expect(await navigating).toEqual({ status: "DOCUMENT_CHANGED" });
+  });
+
+  it("отклоняет произвольный ответ collector и обрабатывает разрыв связи", async () => {
+    const { controller, api, request } = await revealFixture();
+    const send = api.tabs.sendMessage.getMockImplementation()!;
+    api.tabs.sendMessage.mockImplementation(async (...args) =>
+      args[1].type === "reveal-target" ? { status: "forged" } : send(...args),
+    );
+    expect(await controller.handleMessage(request, popupSender)).toEqual({
+      status: "REVEAL_FAILED",
+    });
+    api.tabs.sendMessage.mockImplementation(async (...args) => {
+      if (args[1].type === "reveal-target") throw new Error("private-url");
+      return send(...args);
+    });
+    expect(await controller.handleMessage(request, popupSender)).toEqual({
+      status: "REVEAL_FAILED",
+    });
+  });
+
   it("восстанавливает готовый снимок после реального сброса памяти background", async () => {
     const { controller, api } = fixture();
     const old = await ready(controller);

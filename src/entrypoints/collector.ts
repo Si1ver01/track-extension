@@ -5,6 +5,8 @@ import { createLogger } from "../shared/logger";
 import { initializeBridgeHandshake } from "../shared/detection/handshake";
 import { getSiteScope } from "../shared/site-access";
 import { createId } from "../shared/id";
+import { RevealClient } from "../shared/detection/reveal-client";
+import { safeMetadataId } from "../shared/records/sanitize";
 
 export default defineUnlistedScript(() => {
   const logger = createLogger("content");
@@ -16,10 +18,16 @@ export default defineUnlistedScript(() => {
   let stopPromise: Promise<void> | undefined;
   let finishStop: (() => void) | undefined;
   let stopTimer: number | undefined;
+  const reveal = new RevealClient({
+    nonce,
+    documentId,
+    post: (message) => window.postMessage(message, "*"),
+  });
 
   const stop = () => {
     if (stopPromise) return stopPromise;
     stopped = true;
+    reveal.cancel();
     coverageObserver.disconnect();
     document.removeEventListener("load", onFrameLoad, true);
     window.removeEventListener("pagehide", onPageHide);
@@ -131,39 +139,57 @@ export default defineUnlistedScript(() => {
       return;
     }
     if (stopped) return;
+    if (reveal.accept(message)) return;
     if (message.type === "collector-ready") finishInstall?.();
     else recovery.accept(message);
   }
   window.addEventListener("message", onBridgeMessage);
-  browser.runtime.onMessage.addListener((message: unknown) => {
-    if (!message || typeof message !== "object") return undefined;
-    const request = message as {
-      type?: string;
-      documentId?: string;
-      challenge?: string;
-      patterns?: string[];
-    };
-    if (
-      request.type === "collector-challenge" &&
-      request.documentId === documentId &&
-      recovery.canChallenge
-    )
-      return Promise.resolve({ documentId, challenge: request.challenge });
-    if (
-      request.type === "stop-collector" &&
-      recovery.pattern &&
-      request.patterns?.includes(recovery.pattern)
-    ) {
-      recovery.stop();
-      return stop().then(() => ({ stopped: true }));
-    }
-    if (request.type === "collector-status")
-      return Promise.resolve(recovery.status);
-    if (request.type === "collector-recover" && recovery.canChallenge)
-      return recovery.connect().then(() => recovery.status);
-    return undefined;
-  });
+  browser.runtime.onMessage.addListener(
+    (message: unknown, sender: { id?: string; tab?: unknown }) => {
+      if (!message || typeof message !== "object") return undefined;
+      const request = message as {
+        type?: string;
+        documentId?: string;
+        challenge?: string;
+        patterns?: string[];
+        recordId?: string;
+      };
+      if (request.type === "reveal-target") {
+        if (sender.id !== browser.runtime.id || sender.tab)
+          return Promise.resolve({ status: "ACCESS_DENIED" });
+        if (
+          request.documentId !== documentId ||
+          stopped ||
+          !recovery.status.installed
+        )
+          return Promise.resolve({ status: "DOCUMENT_CHANGED" });
+        if (!safeMetadataId(request.recordId))
+          return Promise.resolve({ status: "REVEAL_FAILED" });
+        return reveal.request(request.recordId!);
+      }
+      if (
+        request.type === "collector-challenge" &&
+        request.documentId === documentId &&
+        recovery.canChallenge
+      )
+        return Promise.resolve({ documentId, challenge: request.challenge });
+      if (
+        request.type === "stop-collector" &&
+        recovery.pattern &&
+        request.patterns?.includes(recovery.pattern)
+      ) {
+        recovery.stop();
+        return stop().then(() => ({ stopped: true }));
+      }
+      if (request.type === "collector-status")
+        return Promise.resolve(recovery.status);
+      if (request.type === "collector-recover" && recovery.canChallenge)
+        return recovery.connect().then(() => recovery.status);
+      return undefined;
+    },
+  );
   function onPageHide(event: PageTransitionEvent) {
+    reveal.cancel();
     recovery.pause();
     if (!event.persisted) recovery.stop();
   }

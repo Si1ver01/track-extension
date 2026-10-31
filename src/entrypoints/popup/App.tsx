@@ -37,7 +37,7 @@ const pendingMessages = {
 };
 
 export function App() {
-  const { snapshot, pending, issue, grant, reload, revoke, retry } =
+  const { snapshot, pending, issue, grant, reload, revoke, retry, reveal } =
     useSiteAccess();
   const statusRef = useRef<HTMLParagraphElement>(null);
   const status = snapshot?.status;
@@ -114,6 +114,7 @@ export function App() {
             coverage={snapshot.coverage}
             documentId={snapshot.documentId}
             onRefresh={retry}
+            onReveal={reveal}
           />
           <p className="scope">Worker-контексты не поддерживаются в MVP.</p>
         </>

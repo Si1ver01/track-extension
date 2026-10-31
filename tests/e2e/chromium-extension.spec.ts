@@ -5,6 +5,11 @@ import path from "node:path";
 import type browser from "webextension-polyfill";
 import type { SiteAccessSnapshot } from "../../src/shared/contracts/site-access";
 import {
+  popupRevealProbe,
+  revealProbe,
+  verifyTargetReveal,
+} from "./reveal-targets.mjs";
+import {
   verifyDetectionCoverage,
   verifyRevokedBFCache,
 } from "./detection-coverage.mjs";
@@ -767,6 +772,13 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
         };
       },
     };
+    await verifyTargetReveal({
+      label: "chromium-extension",
+      run: (operation: string) => fixture.evaluate(revealProbe, operation),
+      popup: (args: Parameters<typeof popupRevealProbe>[0]) =>
+        control.evaluate(popupRevealProbe, args),
+      snapshot,
+    });
     await verifyDetectionCoverage(coverageAdapter);
 
     const otherUrl = new URL(fixtureUrl);

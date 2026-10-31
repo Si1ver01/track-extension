@@ -431,6 +431,49 @@ describe("popup site access", () => {
     expect(screen.queryByText("Обработчики событий не найдены.")).toBeNull();
   });
 
+  it("передаёт подсветке точные идентификаторы главного и вложенного документов", async () => {
+    browserMocks.sendMessage.mockResolvedValue({
+      ...snapshot("ready", [record]),
+      documentId: "main-document",
+    });
+    render(<App />);
+    await screen.findByRole("searchbox");
+    fireEvent.click(document.querySelector("summary")!);
+    browserMocks.sendMessage.mockResolvedValue({ status: "REVEALED" });
+    fireEvent.click(screen.getByRole("button", { name: "Показать элемент" }));
+    await screen.findByText(/Элемент подсвечен/);
+    expect(browserMocks.sendMessage).toHaveBeenLastCalledWith({
+      type: "reveal-listener-target",
+      tabId: 17,
+      frameId: 2,
+      mainDocumentId: "main-document",
+      documentId: "document-one",
+      contextKind: "document",
+      recordId: "one",
+    });
+  });
+
+  it("не возвращает результат подсветки после смены главного документа", async () => {
+    browserMocks.sendMessage.mockResolvedValue({
+      ...snapshot("ready", [record]),
+      documentId: "main-before",
+    });
+    render(<App />);
+    await screen.findByRole("searchbox");
+    fireEvent.click(document.querySelector("summary")!);
+    const response = deferred<{ status: "REVEALED" }>();
+    browserMocks.sendMessage.mockReturnValueOnce(response.promise);
+    fireEvent.click(screen.getByRole("button", { name: "Показать элемент" }));
+    browserMocks.sendMessage.mockResolvedValue({
+      ...snapshot("ready", [record]),
+      documentId: "main-after",
+    });
+    await notify();
+    await act(async () => response.resolve({ status: "REVEALED" }));
+    expect(screen.queryByText(/Элемент подсвечен/)).toBeNull();
+    expect(screen.queryByText("Ищем элемент…")).toBeNull();
+  });
+
   it("сохраняет поиск и фильтры при обновлении записей и смене полноты в том же документе", async () => {
     const mainRecord = {
       ...record,

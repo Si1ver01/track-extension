@@ -6,6 +6,12 @@ import type {
 } from "../../shared/contracts/site-access";
 import { createLogger } from "../../shared/logger";
 import { getSiteScope } from "../../shared/site-access";
+import type { ListenerRecord } from "../../shared/contracts/records";
+import {
+  isRevealResult,
+  type RevealResult,
+  type RevealTargetRequest,
+} from "../../shared/contracts/reveal";
 
 const logger = createLogger("popup.site-access");
 const recoveryTimeout = 10_000;
@@ -292,5 +298,51 @@ export function useSiteAccess() {
     void refresh();
   };
 
-  return { snapshot, pending, issue, grant, reload, revoke, retry };
+  const reveal = async (record: ListenerRecord): Promise<RevealResult> => {
+    const target = current.current;
+    if (
+      !target?.documentId ||
+      action.current ||
+      (target.status !== "ready" && target.status !== "limited")
+    )
+      return { status: "DOCUMENT_CHANGED" };
+    const request: RevealTargetRequest = {
+      type: "reveal-listener-target",
+      tabId: target.tabId,
+      frameId: record.frameId,
+      mainDocumentId: target.documentId,
+      documentId: record.documentId,
+      contextKind: record.contextKind,
+      recordId: record.id,
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const response: unknown = await Promise.race([
+        browser.runtime.sendMessage(request),
+        new Promise<RevealResult>((resolve) => {
+          timer = setTimeout(() => resolve({ status: "TIMEOUT" }), 4000);
+        }),
+      ]);
+      const next = current.current;
+      if (
+        !next ||
+        action.current ||
+        next.documentId !== target.documentId ||
+        next.tabId !== target.tabId ||
+        next.site?.pattern !== target.site?.pattern ||
+        (next.status !== "ready" && next.status !== "limited")
+      )
+        return { status: "DOCUMENT_CHANGED" };
+      return isRevealResult(response)
+        ? { status: response.status }
+        : { status: "REVEAL_FAILED" };
+    } catch {
+      logger.warn("Запрос подсветки не выполнен", { code: "REVEAL_FAILED" });
+      return { status: "REVEAL_FAILED" };
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  return { snapshot, pending, issue, grant, reload, revoke, retry, reveal };
 }
