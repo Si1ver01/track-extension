@@ -583,6 +583,54 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
     expect((await readResults()).cards[0]!.metadata).toContain(
       pointerRecord.id,
     );
+    const exportPopup = (label: string) =>
+      control.evaluate(async (label) => {
+        const popup = (
+          window as unknown as ExtensionWindow
+        ).chrome.extension.getViews({ type: "popup" })[0]! as Window & {
+          URL: typeof URL;
+          lastSnapshotExport?: Promise<string>;
+        };
+        const original = popup.URL.createObjectURL.bind(popup.URL);
+        popup.URL.createObjectURL = (blob) => {
+          popup.lastSnapshotExport = (blob as Blob).text();
+          return original(blob);
+        };
+        try {
+          const button = Array.from(
+            popup.document.querySelectorAll("button"),
+          ).find((node) => node.textContent?.trim() === label)!;
+          button.click();
+          if (!popup.lastSnapshotExport)
+            throw new Error("Экспорт не создал Blob");
+          return JSON.parse(await popup.lastSnapshotExport) as {
+            scope: string;
+            totalCount: number;
+            exportedCount: number;
+            records: { id: string }[];
+            coverage: { partial: boolean };
+          };
+        } finally {
+          popup.URL.createObjectURL = original;
+          delete popup.lastSnapshotExport;
+        }
+      }, label);
+    const filteredExport = await exportPopup("Экспорт выборки");
+    expect(filteredExport.scope).toBe("filtered");
+    expect(filteredExport.records.map((record) => record.id)).toEqual([
+      pointerRecord.id,
+    ]);
+    expect(filteredExport.coverage.partial).toBe(true);
+    const fullExport = await exportPopup("Экспорт всего снимка");
+    expect(fullExport.scope).toBe("all");
+    expect(fullExport.exportedCount).toBe(fullExport.totalCount);
+    expect(fullExport.exportedCount).toBeGreaterThan(1);
+    expect(JSON.stringify(fullExport)).not.toContain(
+      "listener-catalog-private-input",
+    );
+    expect(JSON.stringify(fullExport)).not.toContain(
+      "listener-catalog-callback-content",
+    );
     await setFilter("Источник регистрации", "event-handler-property");
     await expect.poll(async () => (await readResults()).cards.length).toBe(0);
     await clickPopup("Сбросить фильтры");

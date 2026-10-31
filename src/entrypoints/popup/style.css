@@ -87,6 +87,10 @@ li {
   font-size: 16px;
 }
 
+.snapshot-tools {
+  margin: 12px 0;
+}
+
 .results-search {
   display: grid;
   gap: 8px;

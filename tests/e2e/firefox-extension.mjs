@@ -541,6 +541,36 @@ try {
     removedResults.records[0].metadata["Идентификатор записи (id)"],
     pointerRecord.id,
   );
+  async function exportPopup(label) {
+    return api(
+      `const popup = browser.extension.getViews({type: 'popup'})[0];
+       const original = popup.URL.createObjectURL.bind(popup.URL);
+       let exported;
+       popup.URL.createObjectURL = blob => { exported = blob.text(); return original(blob); };
+       try {
+         const button = [...popup.document.querySelectorAll('button')].find(node => node.textContent.trim() === arguments[0]);
+         button.click();
+         if (!exported) throw new Error('Экспорт не создал Blob');
+         return exported.then(JSON.parse);
+       } finally { popup.URL.createObjectURL = original; }`,
+      [label],
+    );
+  }
+  const filteredExport = await exportPopup("Экспорт выборки");
+  assert.equal(filteredExport.scope, "filtered");
+  assert.deepEqual(
+    filteredExport.records.map((record) => record.id),
+    [pointerRecord.id],
+  );
+  assert.equal(filteredExport.coverage.partial, true);
+  const fullExport = await exportPopup("Экспорт всего снимка");
+  assert.equal(fullExport.scope, "all");
+  assert.equal(fullExport.exportedCount, fullExport.totalCount);
+  assert.ok(fullExport.exportedCount > 1);
+  assert.doesNotMatch(
+    JSON.stringify(fullExport),
+    /listener-catalog-private-input|listener-catalog-callback-content/,
+  );
   await filterPopup("Источник регистрации", "event-handler-property");
   await poll(
     popupResults,

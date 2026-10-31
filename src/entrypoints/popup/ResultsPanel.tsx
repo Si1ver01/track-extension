@@ -7,7 +7,9 @@ import {
   type ReactNode,
 } from "react";
 import type { ListenerRecord } from "../../shared/contracts/records";
+import type { SiteCoverage } from "../../shared/contracts/site-access";
 import { createLogger } from "../../shared/logger";
+import { SnapshotExport } from "./SnapshotExport";
 import {
   DEFAULT_RESULT_FILTERS,
   getResultFrameIds,
@@ -132,9 +134,13 @@ function RecordDetails({ record }: { record: ListenerRecord }) {
 export function ResultsPanel({
   records,
   partial,
+  coverage,
+  documentId,
 }: {
   records: ListenerRecord[];
   partial: boolean;
+  coverage?: SiteCoverage;
+  documentId?: string;
 }) {
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState<ResultFilters>(DEFAULT_RESULT_FILTERS);
@@ -273,6 +279,11 @@ export function ResultsPanel({
       <p className="results-count" aria-live="polite" aria-atomic="true">
         Показано записей: {results.matchedCount} из {results.totalCount}.
       </p>
+      <SnapshotExport
+        records={records}
+        visibleRecords={results.groups.flatMap((group) => group.records)}
+        context={{ partial, coverage, documentId }}
+      />
       {results.totalCount === 0 ? (
         <p>
           {partial
