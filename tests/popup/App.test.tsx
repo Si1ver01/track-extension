@@ -446,6 +446,7 @@ describe("popup site access", () => {
     const search = await screen.findByRole("searchbox", {
       name: "Поиск по метаданным",
     });
+    fireEvent.click(screen.getByRole("button", { name: "Запомнить снимок" }));
     fireEvent.change(search, { target: { value: "click" } });
     fireEvent.change(
       screen.getByRole("combobox", { name: "Состояние обработчика" }),
@@ -477,6 +478,10 @@ describe("popup site access", () => {
         .map((element) => (element as HTMLSelectElement).value),
     ).toEqual(["active", "unknown", "2"]);
     expect(screen.getByText("Показано записей: 1 из 1.")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Заменить базовый снимок" }),
+    ).toBeTruthy();
+    expect(screen.getByText(/Без изменений: 1/)).toBeTruthy();
   });
 
   it("сбрасывает поиск и фильтры при смене главного документа даже без его записей", async () => {
@@ -486,6 +491,7 @@ describe("popup site access", () => {
     });
     render(<App />);
     const search = await screen.findByRole("searchbox");
+    fireEvent.click(screen.getByRole("button", { name: "Запомнить снимок" }));
     fireEvent.change(search, { target: { value: "нет-совпадений" } });
     expect(screen.getByText("По запросу ничего не найдено.")).toBeTruthy();
     fireEvent.change(
@@ -507,6 +513,10 @@ describe("popup site access", () => {
     expect((screen.getByRole("searchbox") as HTMLInputElement).value).toBe("");
     expect(screen.getByRole("heading", { name: /^click\b/ })).toBeTruthy();
     expect(screen.queryByText("По запросу ничего не найдено.")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Запомнить снимок" }),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Без изменений:/)).toBeNull();
     expect(
       screen
         .getAllByRole("combobox")

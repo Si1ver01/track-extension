@@ -497,6 +497,8 @@ try {
     (results) => results?.records.length === 1,
     "Firefox не применил пересечение фильтров",
   );
+  await api(`const popup = browser.extension.getViews({type: 'popup'})[0];
+    [...popup.document.querySelectorAll('button')].find(node => node.textContent.trim() === 'Запомнить снимок').click();`);
   await api(
     `return browser.scripting.executeScript({
       target: {tabId: arguments[0], frameIds: [0]}, world: 'MAIN',
@@ -524,6 +526,11 @@ try {
       results?.records.length === 0 &&
       results.text.includes("По выбранным фильтрам ничего не найдено"),
     "Firefox не обновил выдачу после удаления активного обработчика",
+  );
+  await poll(
+    popupResults,
+    (results) => results?.text.includes("active → removed"),
+    "Firefox не сравнил lifecycle с базовым снимком",
   );
   await filterPopup("Состояние обработчика", "removed");
   await searchPopup("pointerdown removed");

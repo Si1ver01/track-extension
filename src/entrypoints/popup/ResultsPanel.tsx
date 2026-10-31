@@ -10,6 +10,7 @@ import type { ListenerRecord } from "../../shared/contracts/records";
 import type { SiteCoverage } from "../../shared/contracts/site-access";
 import { createLogger } from "../../shared/logger";
 import { SnapshotExport } from "./SnapshotExport";
+import { SnapshotComparison } from "./SnapshotComparison";
 import {
   DEFAULT_RESULT_FILTERS,
   getResultFrameIds,
@@ -136,11 +137,13 @@ export function ResultsPanel({
   partial,
   coverage,
   documentId,
+  onRefresh,
 }: {
   records: ListenerRecord[];
   partial: boolean;
   coverage?: SiteCoverage;
   documentId?: string;
+  onRefresh?: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState<ResultFilters>(DEFAULT_RESULT_FILTERS);
@@ -283,6 +286,11 @@ export function ResultsPanel({
         records={records}
         visibleRecords={results.groups.flatMap((group) => group.records)}
         context={{ partial, coverage, documentId }}
+      />
+      <SnapshotComparison
+        records={records}
+        context={{ partial, coverage, documentId }}
+        onRefresh={onRefresh}
       />
       {results.totalCount === 0 ? (
         <p>

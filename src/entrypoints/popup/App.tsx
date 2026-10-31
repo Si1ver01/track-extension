@@ -113,6 +113,7 @@ export function App() {
             partial={status === "limited"}
             coverage={snapshot.coverage}
             documentId={snapshot.documentId}
+            onRefresh={retry}
           />
           <p className="scope">Worker-контексты не поддерживаются в MVP.</p>
         </>
