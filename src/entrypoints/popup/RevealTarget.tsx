@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { LocateFixed } from "lucide-react";
+import { Button } from "../../components/ui/button";
 import type { ListenerRecord } from "../../shared/contracts/records";
 import type { RevealResult, RevealStatus } from "../../shared/contracts/reveal";
 
@@ -58,14 +60,15 @@ export function RevealTarget({
   }
   return (
     <div className="snapshot-tools">
-      <button
-        type="button"
-        className="secondary"
+      <Button
+        variant="outline"
+        size="sm"
         disabled={!onReveal || busy}
         onClick={() => void reveal()}
       >
+        <LocateFixed />
         {busy ? "Ищем элемент…" : "Показать элемент"}
-      </button>
+      </Button>
       {status && <p role="status">{messages[status]}</p>}
     </div>
   );

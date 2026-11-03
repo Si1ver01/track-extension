@@ -39,6 +39,10 @@ function metadataValue(details: HTMLElement, label: string) {
 
 afterEach(cleanup);
 
+function openFilters() {
+  fireEvent.click(screen.getByRole("button", { name: "Фильтры" }));
+}
+
 describe("фильтры панели результатов", () => {
   it("сочетает три фильтра с поиском и различает отдельный и общий сброс", () => {
     const match = record({
@@ -57,6 +61,7 @@ describe("фильтры панели результатов", () => {
         ]}
       />,
     );
+    openFilters();
     const lifecycle = screen.getByRole("combobox", {
       name: "Состояние обработчика",
     }) as HTMLSelectElement;
@@ -120,6 +125,7 @@ describe("фильтры панели результатов", () => {
         ]}
       />,
     );
+    openFilters();
     const frame = screen.getByRole("combobox", {
       name: "Фрейм",
     }) as HTMLSelectElement;
@@ -162,6 +168,7 @@ describe("фильтры панели результатов", () => {
         ]}
       />,
     );
+    openFilters();
     fireEvent.change(
       screen.getByRole("combobox", { name: "Источник регистрации" }),
       { target: { value: "unknown" } },
@@ -184,6 +191,7 @@ describe("фильтры панели результатов", () => {
     const { container, rerender } = render(
       <ResultsPanel partial={false} records={[current]} />,
     );
+    openFilters();
     const lifecycle = screen.getByRole("combobox", {
       name: "Состояние обработчика",
     }) as HTMLSelectElement;
@@ -229,6 +237,7 @@ describe("фильтры панели результатов", () => {
           ]}
         />,
       );
+      openFilters();
       fireEvent.change(screen.getByRole("searchbox"), {
         target: { value: "private-query" },
       });

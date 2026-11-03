@@ -6,6 +6,11 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import * as Collapsible from "@radix-ui/react-collapsible";
+import { Search, SlidersHorizontal, X } from "lucide-react";
+import { Badge } from "../../components/ui/badge";
+import { Button } from "../../components/ui/button";
+import { Input } from "../../components/ui/input";
 import type { ListenerRecord } from "../../shared/contracts/records";
 import type {
   ComparisonBaseline,
@@ -65,7 +70,12 @@ function RecordDetails({
           {record.documentId}
         </span>
         <span className="record-description">{record.description}</span>
-        <span className="record-lifecycle">{lifecycle}</span>
+        <Badge
+          variant="outline"
+          className={"record-lifecycle lifecycle-" + record.lifecycle}
+        >
+          {lifecycle}
+        </Badge>
       </summary>
       <RevealTarget record={record} onReveal={onReveal} />
       <dl className="record-metadata">
@@ -152,6 +162,8 @@ export function ResultsPanel({
   onReveal,
   baseline,
   onBaselineChange,
+  onVisibleRecordsChange,
+  showExport = true,
 }: {
   records: ListenerRecord[];
   partial: boolean;
@@ -161,9 +173,12 @@ export function ResultsPanel({
   onReveal?: RevealAction;
   baseline?: ComparisonBaseline | null;
   onBaselineChange?: (capture: boolean) => Promise<boolean>;
+  onVisibleRecordsChange?: (records: ListenerRecord[]) => void;
+  showExport?: boolean;
 }) {
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState<ResultFilters>(DEFAULT_RESULT_FILTERS);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const searchId = useId();
   const titleId = useId();
   const lifecycleId = useId();
@@ -189,128 +204,184 @@ export function ResultsPanel({
     });
   }, [results, activeFilterCount]);
 
+  useEffect(() => {
+    onVisibleRecordsChange?.(results.groups.flatMap((group) => group.records));
+  }, [onVisibleRecordsChange, results.groups]);
+
   return (
     <section className="results-panel" aria-labelledby={titleId}>
-      <h2 id={titleId}>Полученные записи</h2>
-      <div className="results-search">
-        <label htmlFor={searchId}>Поиск по метаданным</label>
-        <input
-          id={searchId}
-          ref={inputRef}
-          type="search"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-        />
-        {query.length > 0 && (
-          <button
-            className="secondary"
-            type="button"
+      <h2 id={titleId} className="sr-only">
+        Полученные записи
+      </h2>
+      <Collapsible.Root
+        open={filtersOpen}
+        onOpenChange={setFiltersOpen}
+        className="filter-disclosure"
+      >
+        <div className="results-toolbar">
+          <div className="search-field">
+            <label className="sr-only" htmlFor={searchId}>
+              Поиск по метаданным
+            </label>
+            <Search aria-hidden="true" className="search-icon" />
+            <Input
+              id={searchId}
+              ref={inputRef}
+              type="search"
+              placeholder="Поиск по метаданным"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+            {query.length > 0 && (
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                aria-label="Очистить поиск"
+                onClick={() => {
+                  setQuery("");
+                  inputRef.current?.focus();
+                }}
+              >
+                <X />
+              </Button>
+            )}
+          </div>
+          <Collapsible.Trigger asChild>
+            <Button
+              variant="outline"
+              size="sm"
+              aria-label="Фильтры"
+              aria-expanded={filtersOpen}
+            >
+              <SlidersHorizontal />
+              Фильтры
+              {activeFilterCount > 0 && (
+                <Badge variant="secondary">{activeFilterCount}</Badge>
+              )}
+            </Button>
+          </Collapsible.Trigger>
+        </div>
+        <Collapsible.Content className="filter-content">
+          <fieldset className="results-filters">
+            <legend className="sr-only">Фильтры записей</legend>
+            <div className="result-filter">
+              <label htmlFor={lifecycleId}>Состояние обработчика</label>
+              <select
+                id={lifecycleId}
+                value={filters.lifecycle}
+                onChange={(event) =>
+                  setFilters({
+                    ...filters,
+                    lifecycle: event.target.value as ResultFilters["lifecycle"],
+                  })
+                }
+              >
+                <option value="all">Все состояния</option>
+                <option value="active">Активен (active)</option>
+                <option value="removed">Удалён (removed)</option>
+                <option value="unknown">Неизвестно (unknown)</option>
+              </select>
+            </div>
+            <div className="result-filter">
+              <label htmlFor={sourceKindId}>Источник регистрации</label>
+              <select
+                id={sourceKindId}
+                value={filters.sourceKind}
+                onChange={(event) =>
+                  setFilters({
+                    ...filters,
+                    sourceKind: event.target
+                      .value as ResultFilters["sourceKind"],
+                  })
+                }
+              >
+                <option value="all">Все источники</option>
+                <option value="add-event-listener">addEventListener</option>
+                <option value="event-handler-property">Свойство on…</option>
+                <option value="inline-attribute">Inline-атрибут</option>
+                <option value="unknown">Неизвестно</option>
+              </select>
+            </div>
+            <div className="result-filter">
+              <label htmlFor={frameId}>Фрейм</label>
+              <select
+                id={frameId}
+                value={filters.frameId}
+                onChange={(event) =>
+                  setFilters({
+                    ...filters,
+                    frameId:
+                      event.target.value === "all"
+                        ? "all"
+                        : Number(event.target.value),
+                  })
+                }
+              >
+                <option value="all">Все фреймы</option>
+                {frameIds.map((id) => (
+                  <option key={id} value={id}>
+                    {id === 0 ? "Главный фрейм (0)" : `Фрейм ${id}`}
+                  </option>
+                ))}
+                {filters.frameId !== "all" &&
+                  !frameIds.includes(filters.frameId) && (
+                    <option value={filters.frameId}>
+                      Фрейм {filters.frameId} (нет записей)
+                    </option>
+                  )}
+              </select>
+            </div>
+            <div className="filter-actions">
+              {activeFilterCount > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setFilters(DEFAULT_RESULT_FILTERS);
+                    setQuery("");
+                    inputRef.current?.focus();
+                  }}
+                >
+                  Сбросить фильтры
+                </Button>
+              )}
+            </div>
+          </fieldset>
+        </Collapsible.Content>
+      </Collapsible.Root>
+      <div className="results-summary">
+        <p className="results-count" aria-live="polite" aria-atomic="true">
+          Показано записей: {results.matchedCount} из {results.totalCount}.
+        </p>
+        {query && (
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => {
               setQuery("");
               inputRef.current?.focus();
             }}
           >
             Сбросить поиск
-          </button>
+          </Button>
         )}
       </div>
-      <fieldset className="results-filters">
-        <legend>Фильтры записей</legend>
-        <div className="result-filter">
-          <label htmlFor={lifecycleId}>Состояние обработчика</label>
-          <select
-            id={lifecycleId}
-            value={filters.lifecycle}
-            onChange={(event) =>
-              setFilters({
-                ...filters,
-                lifecycle: event.target.value as ResultFilters["lifecycle"],
-              })
-            }
-          >
-            <option value="all">Все состояния</option>
-            <option value="active">Активен (active)</option>
-            <option value="removed">Удалён (removed)</option>
-            <option value="unknown">Неизвестно (unknown)</option>
-          </select>
-        </div>
-        <div className="result-filter">
-          <label htmlFor={sourceKindId}>Источник регистрации</label>
-          <select
-            id={sourceKindId}
-            value={filters.sourceKind}
-            onChange={(event) =>
-              setFilters({
-                ...filters,
-                sourceKind: event.target.value as ResultFilters["sourceKind"],
-              })
-            }
-          >
-            <option value="all">Все источники</option>
-            <option value="add-event-listener">addEventListener</option>
-            <option value="event-handler-property">Свойство on…</option>
-            <option value="inline-attribute">Inline-атрибут</option>
-            <option value="unknown">Неизвестно</option>
-          </select>
-        </div>
-        <div className="result-filter">
-          <label htmlFor={frameId}>Фрейм</label>
-          <select
-            id={frameId}
-            value={filters.frameId}
-            onChange={(event) =>
-              setFilters({
-                ...filters,
-                frameId:
-                  event.target.value === "all"
-                    ? "all"
-                    : Number(event.target.value),
-              })
-            }
-          >
-            <option value="all">Все фреймы</option>
-            {frameIds.map((id) => (
-              <option key={id} value={id}>
-                {id === 0 ? "Главный фрейм (0)" : `Фрейм ${id}`}
-              </option>
-            ))}
-            {filters.frameId !== "all" &&
-              !frameIds.includes(filters.frameId) && (
-                <option value={filters.frameId}>
-                  Фрейм {filters.frameId} (нет записей)
-                </option>
-              )}
-          </select>
-        </div>
-        {activeFilterCount > 0 && (
-          <button
-            className="secondary"
-            type="button"
-            onClick={() => {
-              setFilters(DEFAULT_RESULT_FILTERS);
-              setQuery("");
-              inputRef.current?.focus();
-            }}
-          >
-            Сбросить фильтры
-          </button>
-        )}
-      </fieldset>
-      <p className="results-count" aria-live="polite" aria-atomic="true">
-        Показано записей: {results.matchedCount} из {results.totalCount}.
-      </p>
-      <SnapshotExport
-        records={records}
-        visibleRecords={results.groups.flatMap((group) => group.records)}
-        context={{ partial, coverage, documentId }}
-      />
-      <SnapshotComparison
-        records={records}
-        context={{ partial, coverage, documentId }}
-        onRefresh={onRefresh}
-        baseline={baseline ?? null}
-        onBaselineChange={onBaselineChange}
-      />
+      {showExport && (
+        <SnapshotExport
+          records={records}
+          visibleRecords={results.groups.flatMap((group) => group.records)}
+          context={{ partial, coverage, documentId }}
+        />
+      )}
+      {onBaselineChange && (
+        <SnapshotComparison
+          records={records}
+          context={{ partial, coverage, documentId }}
+          onRefresh={onRefresh}
+          baseline={baseline ?? null}
+          onBaselineChange={onBaselineChange}
+        />
+      )}
       {results.totalCount === 0 ? (
         <p>
           {partial

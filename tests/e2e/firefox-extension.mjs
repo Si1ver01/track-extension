@@ -102,17 +102,18 @@ try {
     api(`const popup = browser.extension.getViews({type: 'popup'})[0];
       if (!popup) return null;
       const document = popup.document;
+      const panel = document.querySelector('[role="tabpanel"]:not([hidden])') || document;
       const input = document.querySelector('input[type="search"]');
       return {
         search: input && {
           value: input.value,
           label: document.querySelector('label[for="' + input.id + '"]')?.textContent.trim()
         },
-        groups: [...document.querySelectorAll('h3')].map(group => group.textContent.trim()),
-        count: document.querySelector('.results-count')?.textContent.trim(),
-        filters: [...document.querySelectorAll('.results-filters select')].map(select => select.value),
-        text: document.body.textContent,
-        records: [...document.querySelectorAll('details.listener-record')].map(record => ({
+        groups: [...panel.querySelectorAll('h3')].map(group => group.textContent.trim()),
+        count: panel.querySelector('.results-count')?.textContent.trim(),
+        filters: [...panel.querySelectorAll('.results-filters select')].map(select => select.value),
+        text: document.body.innerText,
+        records: [...panel.querySelectorAll('details.listener-record')].map(record => ({
           eventType: record.querySelector('.record-event')?.textContent.trim(),
           context: record.querySelector('.record-context')?.textContent.trim(),
           open: record.open,
@@ -130,9 +131,24 @@ try {
       [query],
     );
   }
+  async function selectPopupTab(label) {
+    await api(
+      `const popup = browser.extension.getViews({type: 'popup'})[0];
+      const tab = [...popup.document.querySelectorAll('[role="tab"]')].find(node => node.textContent.trim() === arguments[0]);
+      if (!tab) throw new Error('Вкладка настоящего popup недоступна: ' + arguments[0]);
+      tab.dispatchEvent(new popup.MouseEvent('mousedown', {bubbles: true, button: 0}));
+      await new Promise(resolve => popup.setTimeout(resolve, 0));`,
+      [label],
+    );
+  }
   async function filterPopup(label, value) {
     await api(
       `const popup = browser.extension.getViews({type: 'popup'})[0];
+      const filterToggle = popup.document.querySelector('button[aria-label="Фильтры"]');
+      if (filterToggle?.getAttribute('aria-expanded') !== 'true') {
+        filterToggle?.click();
+        await new Promise(resolve => popup.setTimeout(resolve, 0));
+      }
       const label = [...popup.document.querySelectorAll('label')].find(node => node.textContent === arguments[0]);
       const select = label && popup.document.getElementById(label.htmlFor);
       if (!select || ![...select.options].some(option => option.value === arguments[1])) throw new Error('Фильтр настоящего popup недоступен');
@@ -506,7 +522,7 @@ try {
     [...popup.document.querySelectorAll('button')].find(node => node.textContent.trim() === 'Запомнить снимок').click();`);
   await poll(
     popupResults,
-    (results) => results?.text.includes("Заменить базовый снимок"),
+    (results) => results?.text.includes("Заменить снимок"),
     "Firefox не сохранил базовый снимок",
   );
   await api("browser.extension.getViews({type: 'popup'})[0].close();");
@@ -526,11 +542,13 @@ try {
     [fixture.id],
   );
   await openActionPopup(fixture.id);
+  await selectPopupTab("Сравнение");
   await poll(
     popupResults,
     (results) => results?.text.includes("active → removed"),
     "Firefox не восстановил сравнение после закрытия popup",
   );
+  await selectPopupTab("Обработчики");
   await searchPopup("pointerdown");
   await filterPopup("Состояние обработчика", "active");
   await filterPopup("Источник регистрации", "add-event-listener");
@@ -553,11 +571,13 @@ try {
       results.text.includes("По выбранным фильтрам ничего не найдено"),
     "Firefox не обновил выдачу после удаления активного обработчика",
   );
+  await selectPopupTab("Сравнение");
   await poll(
     popupResults,
     (results) => results?.text.includes("active → removed"),
     "Firefox не сравнил lifecycle с базовым снимком",
   );
+  await selectPopupTab("Обработчики");
   await filterPopup("Состояние обработчика", "removed");
   await searchPopup("pointerdown removed");
   const removedResults = await poll(
@@ -581,8 +601,13 @@ try {
        let exported;
        popup.URL.createObjectURL = blob => { exported = blob.text(); return original(blob); };
        try {
-         const button = [...popup.document.querySelectorAll('button')].find(node => node.textContent.trim() === arguments[0]);
-         button.click();
+         const trigger = [...popup.document.querySelectorAll('button')].find(node => node.textContent.trim() === 'Экспорт JSON');
+         if (!trigger) throw new Error('Кнопка экспорта popup отсутствует');
+         trigger.dispatchEvent(new popup.PointerEvent('pointerdown', {bubbles: true, button: 0, ctrlKey: false, pointerType: 'mouse', isPrimary: true}));
+         await new Promise(resolve => popup.setTimeout(resolve, 0));
+         const item = [...popup.document.querySelectorAll('[role="menuitem"]')].find(node => node.textContent.trim().startsWith(arguments[0]));
+         if (!item) throw new Error('Пункт экспорта popup недоступен: ' + arguments[0]);
+         item.click();
          if (!exported) throw new Error('Экспорт не создал Blob');
          return exported.then(JSON.parse);
        } finally { popup.URL.createObjectURL = original; }`,

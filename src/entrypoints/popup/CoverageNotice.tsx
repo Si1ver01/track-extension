@@ -1,15 +1,23 @@
 import type { SiteCoverage } from "../../shared/contracts/site-access";
+import { RefreshCw } from "lucide-react";
+import { Button } from "../../components/ui/button";
 
 export function CoverageNotice({
   coverage,
   limited,
+  onReload,
 }: {
   coverage?: SiteCoverage;
   limited: boolean;
+  onReload?: () => void;
 }) {
   const reasons = coverage?.reasons ?? [];
   return (
-    <aside className="scope" aria-label="Покрытие сбора" aria-live="polite">
+    <aside
+      className={limited ? "coverage-notice" : "coverage-footnote"}
+      aria-label="Покрытие сбора"
+      aria-live="polite"
+    >
       {limited && (
         <ul>
           {reasons.includes("FRAME_PARTIAL") && (
@@ -39,6 +47,14 @@ export function CoverageNotice({
         Обработчики, зарегистрированные до запуска сборщика, могут
         отсутствовать.
       </p>
+      {limited && onReload && (
+        <div className="coverage-actions">
+          <Button variant="outline" size="sm" onClick={onReload}>
+            <RefreshCw />
+            Перезагрузить вкладку
+          </Button>
+        </div>
+      )}
     </aside>
   );
 }

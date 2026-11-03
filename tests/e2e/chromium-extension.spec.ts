@@ -156,7 +156,7 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
           window as unknown as ExtensionWindow
         ).chrome.extension.getViews({
           type: "popup",
-        })[0];
+        })[0] as (Window & typeof globalThis) | undefined;
         return popup?.document.body.innerText ?? "";
       });
     const snapshot = (id = tabId) =>
@@ -172,17 +172,43 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
         }) as Promise<SiteAccessSnapshot>;
       }, id);
     const clickPopup = (label: string) =>
-      control.evaluate((text) => {
+      control.evaluate(async (text) => {
         const popup = (
           window as unknown as ExtensionWindow
         ).chrome.extension.getViews({
           type: "popup",
-        })[0];
-        const button = Array.from(
-          popup?.document.querySelectorAll("button") ?? [],
-        ).find((element) => element.textContent?.trim() === text);
-        if (!button) throw new Error(`Кнопка popup отсутствует: ${text}`);
-        button.click();
+        })[0] as (Window & typeof globalThis) | undefined;
+        const target = Array.from(
+          popup?.document.querySelectorAll<HTMLElement>(
+            'button, [role="menuitem"]',
+          ) ?? [],
+        ).find(
+          (element) =>
+            element.textContent?.trim() === text ||
+            element.getAttribute("aria-label") === text,
+        );
+        if (!target) throw new Error(`Элемент popup отсутствует: ${text}`);
+        if (target.getAttribute("role") === "tab") {
+          if (!popup) throw new Error("Popup отсутствует при выборе вкладки");
+          target.dispatchEvent(
+            new popup.MouseEvent("mousedown", { bubbles: true, button: 0 }),
+          );
+          await new Promise<void>((resolve) => popup.setTimeout(resolve, 0));
+        } else if (target.getAttribute("aria-haspopup") === "menu") {
+          if (!popup) throw new Error("Popup отсутствует при открытии меню");
+          target.dispatchEvent(
+            new popup.PointerEvent("pointerdown", {
+              bubbles: true,
+              button: 0,
+              ctrlKey: false,
+              pointerType: "mouse",
+              isPrimary: true,
+            }),
+          );
+          await new Promise<void>((resolve) => popup.setTimeout(resolve, 0));
+        } else {
+          target.click();
+        }
       }, label);
     await expect.poll(popupText).toContain("Перезагрузить вкладку");
     await clickPopup("Перезагрузить вкладку");
@@ -273,13 +299,16 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
         const popup = (
           window as unknown as ExtensionWindow
         ).chrome.extension.getViews({ type: "popup" })[0];
+        const panel = popup?.document.querySelector<HTMLElement>(
+          '[role="tabpanel"]:not([hidden])',
+        );
         return {
           query: popup?.document.querySelector<HTMLInputElement>(
             'input[type="search"]',
           )?.value,
           text: popup?.document.body.innerText ?? "",
           filters: Array.from(
-            popup?.document.querySelectorAll<HTMLSelectElement>(
+            panel?.querySelectorAll<HTMLSelectElement>(
               ".results-filters select",
             ) ?? [],
             (select) => select.value,
@@ -291,11 +320,11 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
             popup?.document.querySelectorAll(".results-filters select") ?? [],
           ).findIndex((select) => select === popup?.document.activeElement),
           groups: Array.from(
-            popup?.document.querySelectorAll(".results-group h3") ?? [],
+            panel?.querySelectorAll(".results-group h3") ?? [],
             (node) => node.textContent,
           ),
           cards: Array.from(
-            popup?.document.querySelectorAll<HTMLDetailsElement>(
+            panel?.querySelectorAll<HTMLDetailsElement>(
               "details.listener-record",
             ) ?? [],
             (node) => ({
@@ -328,10 +357,17 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
 
     const setFilter = (label: string, value: string) =>
       control.evaluate(
-        ({ label, value }) => {
+        async ({ label, value }) => {
           const popup = (
             window as unknown as ExtensionWindow
           ).chrome.extension.getViews({ type: "popup" })[0];
+          const filterToggle = popup?.document.querySelector<HTMLButtonElement>(
+            'button[aria-label="Фильтры"]',
+          );
+          if (filterToggle?.getAttribute("aria-expanded") !== "true") {
+            filterToggle?.click();
+            await new Promise<void>((resolve) => popup?.setTimeout(resolve, 0));
+          }
           const filterLabel = Array.from(
             popup?.document.querySelectorAll("label") ?? [],
           ).find((node) => node.textContent === label);
@@ -354,6 +390,7 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
         { label, value },
       );
 
+    await clickPopup("Фильтры");
     await expect.poll(async () => (await readResults()).query).toBe("");
     await expect
       .poll(async () => (await readResults()).filters)
@@ -560,7 +597,7 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
     await setFilter("Фрейм", "0");
     await expect.poll(async () => (await readResults()).cards.length).toBe(1);
     await clickPopup("Запомнить снимок");
-    await expect.poll(popupText).toContain("Заменить базовый снимок");
+    await expect.poll(popupText).toContain("Заменить снимок");
     await control.evaluate(() =>
       (window as unknown as ExtensionWindow).chrome.extension
         .getViews({ type: "popup" })[0]!
@@ -574,8 +611,10 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
     await worker.evaluate(() =>
       (globalThis as unknown as ExtensionWindow).chrome.action.openPopup(),
     );
-    await expect.poll(popupText).toContain("Заменить базовый снимок");
+    await expect.poll(popupText).toContain("Заменить снимок");
+    await clickPopup("Сравнение");
     await expect.poll(popupText).toContain("active → removed");
+    await clickPopup("Обработчики");
     await setSearch("pointerdown");
     await setFilter("Состояние обработчика", "active");
     await setFilter("Источник регистрации", "add-event-listener");
@@ -593,10 +632,10 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
     await expect.poll(async () => (await readResults()).cards.length).toBe(0);
     await expect
       .poll(async () => (await readResults()).text)
-      .toContain("active → removed");
-    await expect
-      .poll(async () => (await readResults()).text)
       .toContain("По выбранным фильтрам ничего не найдено");
+    await clickPopup("Сравнение");
+    await expect.poll(popupText).toContain("active → removed");
+    await clickPopup("Обработчики");
     await setFilter("Состояние обработчика", "removed");
     await setSearch("pointerdown removed");
     await expect
@@ -612,20 +651,37 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
       control.evaluate(async (label) => {
         const popup = (
           window as unknown as ExtensionWindow
-        ).chrome.extension.getViews({ type: "popup" })[0]! as Window & {
-          URL: typeof URL;
-          lastSnapshotExport?: Promise<string>;
-        };
+        ).chrome.extension.getViews({ type: "popup" })[0]! as Window &
+          typeof globalThis & {
+            URL: typeof URL;
+            lastSnapshotExport?: Promise<string>;
+          };
         const original = popup.URL.createObjectURL.bind(popup.URL);
         popup.URL.createObjectURL = (blob) => {
           popup.lastSnapshotExport = (blob as Blob).text();
           return original(blob);
         };
         try {
-          const button = Array.from(
+          const trigger = Array.from(
             popup.document.querySelectorAll("button"),
-          ).find((node) => node.textContent?.trim() === label)!;
-          button.click();
+          ).find((node) => node.textContent?.trim() === "Экспорт JSON");
+          if (!trigger) throw new Error("Кнопка экспорта popup отсутствует");
+          trigger.dispatchEvent(
+            new popup.PointerEvent("pointerdown", {
+              bubbles: true,
+              button: 0,
+              ctrlKey: false,
+              pointerType: "mouse",
+              isPrimary: true,
+            }),
+          );
+          await new Promise<void>((resolve) => popup.setTimeout(resolve, 0));
+          const item = Array.from(
+            popup.document.querySelectorAll<HTMLElement>('[role="menuitem"]'),
+          ).find((node) => node.textContent?.trim().startsWith(label));
+          if (!item)
+            throw new Error(`Пункт экспорта popup отсутствует: ${label}`);
+          item.click();
           if (!popup.lastSnapshotExport)
             throw new Error("Экспорт не создал Blob");
           return JSON.parse(await popup.lastSnapshotExport) as {
@@ -836,6 +892,7 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
       )
       .toBe(true);
 
+    await clickPopup("Управление доступом");
     await expect.poll(popupText).toContain("Отозвать доступ");
     await verifyRevokedBFCache({
       ...coverageAdapter,

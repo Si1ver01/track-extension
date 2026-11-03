@@ -6,6 +6,15 @@ import {
   downloadSnapshot,
   type SnapshotContext,
 } from "./snapshots";
+import { Download } from "lucide-react";
+import { Button } from "../../components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuShortcut,
+  DropdownMenuTrigger,
+} from "../../components/ui/dropdown-menu";
 
 const logger = createLogger("popup.export");
 
@@ -36,22 +45,24 @@ export function SnapshotExport({
   }
   return (
     <section className="snapshot-tools" aria-label="Экспорт снимка">
-      <div className="actions">
-        <button
-          type="button"
-          className="secondary"
-          onClick={() => exportRecords("all")}
-        >
-          Экспорт всего снимка
-        </button>
-        <button
-          type="button"
-          className="secondary"
-          onClick={() => exportRecords("filtered")}
-        >
-          Экспорт выборки
-        </button>
-      </div>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="outline" size="sm">
+            <Download />
+            Экспорт JSON
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem onSelect={() => exportRecords("all")}>
+            Экспорт всего снимка
+            <DropdownMenuShortcut>{records.length}</DropdownMenuShortcut>
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => exportRecords("filtered")}>
+            Экспорт выборки
+            <DropdownMenuShortcut>{visibleRecords.length}</DropdownMenuShortcut>
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
       {message && <p role="status">{message}</p>}
     </section>
   );

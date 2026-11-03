@@ -84,6 +84,25 @@ async function notify(tabId = 17) {
   await act(async () => listener({ type: "site-access-updated", tabId }));
 }
 
+function openFilters() {
+  fireEvent.click(screen.getByRole("button", { name: "Фильтры" }));
+}
+
+function selectTab(name: string) {
+  fireEvent.mouseDown(screen.getByRole("tab", { name }), {
+    button: 0,
+    ctrlKey: false,
+  });
+}
+
+function revokeAccess() {
+  fireEvent.pointerDown(
+    screen.getByRole("button", { name: "Управление доступом" }),
+    { button: 0, ctrlKey: false },
+  );
+  fireEvent.click(screen.getByRole("menuitem", { name: "Отозвать доступ" }));
+}
+
 async function captureBaseline(current: SiteAccessSnapshot) {
   const baseline = {
     documentId: current.documentId!,
@@ -98,7 +117,7 @@ async function captureBaseline(current: SiteAccessSnapshot) {
     expect(
       (
         screen.getByRole("button", {
-          name: "Заменить базовый снимок",
+          name: "Заменить снимок",
         }) as HTMLButtonElement
       ).disabled,
     ).toBe(false),
@@ -226,7 +245,12 @@ describe("popup site access", () => {
     expect(
       await screen.findByText(/На этой странице расширение недоступно/),
     ).toBeTruthy();
-    expect(screen.queryByRole("button")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Управление доступом" }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Разрешить для этого сайта" }),
+    ).toBeNull();
     expect(browserMocks.request).not.toHaveBeenCalled();
   });
 
@@ -389,7 +413,7 @@ describe("popup site access", () => {
     expect(
       await screen.findByRole("heading", { name: /^click\b/ }),
     ).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Отозвать доступ" }));
+    revokeAccess();
     expect(
       await screen.findByRole("button", { name: "Разрешить для этого сайта" }),
     ).toBeTruthy();
@@ -427,7 +451,7 @@ describe("popup site access", () => {
     browserMocks.sendMessage.mockReturnValueOnce(olderState.promise);
     await notify();
     browserMocks.sendMessage.mockResolvedValue(snapshot("no-access"));
-    fireEvent.click(screen.getByRole("button", { name: "Отозвать доступ" }));
+    revokeAccess();
     expect(
       await screen.findByRole("button", { name: "Разрешить для этого сайта" }),
     ).toBeTruthy();
@@ -517,9 +541,11 @@ describe("popup site access", () => {
       baseline,
     });
     render(<App />);
+    await screen.findByRole("searchbox");
+    selectTab("Сравнение");
     expect(await screen.findByText("active → removed")).toBeTruthy();
     expect(
-      screen.getByRole("button", { name: "Заменить базовый снимок" }),
+      screen.getByRole("button", { name: "Заменить снимок" }),
     ).toBeTruthy();
   });
 
@@ -537,7 +563,7 @@ describe("popup site access", () => {
         : snapshot("no-access"),
     );
     fireEvent.click(screen.getByRole("button", { name: "Запомнить снимок" }));
-    fireEvent.click(screen.getByRole("button", { name: "Отозвать доступ" }));
+    revokeAccess();
     await screen.findByRole("button", { name: "Разрешить для этого сайта" });
     await act(async () =>
       saving.resolve({
@@ -573,6 +599,7 @@ describe("popup site access", () => {
       documentId: "main-document",
     });
     fireEvent.change(search, { target: { value: "click" } });
+    openFilters();
     fireEvent.change(
       screen.getByRole("combobox", { name: "Состояние обработчика" }),
       { target: { value: "active" } },
@@ -605,10 +632,12 @@ describe("popup site access", () => {
         .map((element) => (element as HTMLSelectElement).value),
     ).toEqual(["active", "unknown", "2"]);
     expect(screen.getByText("Показано записей: 1 из 1.")).toBeTruthy();
+    selectTab("Сравнение");
     expect(
-      screen.getByRole("button", { name: "Заменить базовый снимок" }),
+      screen.getByRole("button", { name: "Заменить снимок" }),
     ).toBeTruthy();
-    expect(screen.getByText(/Без изменений: 1/)).toBeTruthy();
+    const unchangedMetric = screen.getByText("Без изменений").parentElement;
+    expect(unchangedMetric?.textContent).toContain("1");
   });
 
   it("сбрасывает поиск и фильтры при смене главного документа даже без его записей", async () => {
@@ -624,6 +653,7 @@ describe("popup site access", () => {
     });
     fireEvent.change(search, { target: { value: "нет-совпадений" } });
     expect(screen.getByText("По запросу ничего не найдено.")).toBeTruthy();
+    openFilters();
     fireEvent.change(
       screen.getByRole("combobox", { name: "Состояние обработчика" }),
       { target: { value: "removed" } },
@@ -643,6 +673,7 @@ describe("popup site access", () => {
     expect((screen.getByRole("searchbox") as HTMLInputElement).value).toBe("");
     expect(screen.getByRole("heading", { name: /^click\b/ })).toBeTruthy();
     expect(screen.queryByText("По запросу ничего не найдено.")).toBeNull();
+    openFilters();
     expect(
       screen.getByRole("button", { name: "Запомнить снимок" }),
     ).toBeTruthy();
@@ -667,6 +698,7 @@ describe("popup site access", () => {
       pattern: "https://other.example/*",
       label: "https://other.example",
     };
+    openFilters();
     fireEvent.change(screen.getByRole("combobox", { name: "Фрейм" }), {
       target: { value: "2" },
     });
@@ -677,6 +709,7 @@ describe("popup site access", () => {
     });
     await notify();
     expect((screen.getByRole("searchbox") as HTMLInputElement).value).toBe("");
+    openFilters();
     expect(
       screen
         .getAllByRole("combobox")
@@ -690,7 +723,7 @@ describe("popup site access", () => {
       screen.getByRole("combobox", { name: "Источник регистрации" }),
       { target: { value: "unknown" } },
     );
-    fireEvent.click(screen.getByRole("button", { name: "Отозвать доступ" }));
+    revokeAccess();
     await screen.findByRole("button", { name: "Разрешить для этого сайта" });
     expect(screen.queryByRole("searchbox")).toBeNull();
     browserMocks.sendMessage.mockResolvedValue({
@@ -699,6 +732,7 @@ describe("popup site access", () => {
     });
     await notify();
     expect((screen.getByRole("searchbox") as HTMLInputElement).value).toBe("");
+    openFilters();
     expect(
       screen
         .getAllByRole("combobox")
@@ -714,6 +748,8 @@ describe("popup site access", () => {
         documentId: "same-document",
       });
       render(<App />);
+      await screen.findByRole("searchbox");
+      openFilters();
       fireEvent.change(
         await screen.findByRole("combobox", { name: "Состояние обработчика" }),
         { target: { value: "removed" } },
@@ -729,6 +765,7 @@ describe("popup site access", () => {
         documentId: "same-document",
       });
       await notify();
+      openFilters();
       expect(
         screen
           .getAllByRole("combobox")
@@ -743,6 +780,7 @@ describe("popup site access", () => {
     fireEvent.change(await screen.findByRole("searchbox"), {
       target: { value: "click" },
     });
+    openFilters();
     fireEvent.change(screen.getByRole("combobox", { name: "Фрейм" }), {
       target: { value: "2" },
     });
@@ -758,6 +796,7 @@ describe("popup site access", () => {
     expect(
       ((await screen.findByRole("searchbox")) as HTMLInputElement).value,
     ).toBe("");
+    openFilters();
     expect(
       screen
         .getAllByRole("combobox")

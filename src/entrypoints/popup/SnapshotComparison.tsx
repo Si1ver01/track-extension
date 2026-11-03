@@ -1,4 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Camera, RefreshCw, RotateCcw } from "lucide-react";
+import { Alert, AlertDescription } from "../../components/ui/alert";
+import { Button } from "../../components/ui/button";
 import type { ListenerRecord } from "../../shared/contracts/records";
 import type { ComparisonBaseline } from "../../shared/contracts/site-access";
 import {
@@ -17,18 +20,37 @@ function RecordLabel({ record }: { record: ListenerRecord }) {
   );
 }
 
+function ComparisonMetric({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: string;
+}) {
+  return (
+    <div className={"comparison-metric metric-" + tone}>
+      <span>{value}</span>
+      <span>{label}</span>
+    </div>
+  );
+}
+
 export function SnapshotComparison({
   records,
   context,
   onRefresh,
   baseline,
   onBaselineChange,
+  hideCaptureAction = false,
 }: {
   records: ListenerRecord[];
   context: SnapshotContext;
   onRefresh?: () => void;
   baseline: ComparisonBaseline | null;
   onBaselineChange?: (capture: boolean) => Promise<boolean>;
+  hideCaptureAction?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
@@ -63,57 +85,88 @@ export function SnapshotComparison({
 
   return (
     <section
-      className="snapshot-tools"
+      className="snapshot-tools comparison-panel"
       aria-label="Сравнение снимков"
       aria-busy={busy}
     >
-      <div className="actions">
-        <button
-          type="button"
-          className="secondary"
-          disabled={busy || !onBaselineChange}
-          onClick={() => void changeBaseline(true)}
-        >
-          {baseline ? "Заменить базовый снимок" : "Запомнить снимок"}
-        </button>
+      <div className="comparison-actions">
+        {!hideCaptureAction && (
+          <Button
+            variant="default"
+            size="sm"
+            disabled={busy || !onBaselineChange}
+            onClick={() => void changeBaseline(true)}
+          >
+            <Camera />
+            {baseline ? "Заменить базовый снимок" : "Запомнить снимок"}
+          </Button>
+        )}
         {onRefresh && (
-          <button
-            type="button"
-            className="secondary"
+          <Button
+            variant="outline"
+            size="sm"
             disabled={busy}
             onClick={onRefresh}
           >
+            <RefreshCw />
             Обновить снимок
-          </button>
+          </Button>
         )}
         {baseline && (
-          <button
-            type="button"
-            className="secondary"
+          <Button
+            variant="ghost"
+            size="sm"
             disabled={busy || !onBaselineChange}
             onClick={() => void changeBaseline(false)}
           >
+            <RotateCcw />
             Сбросить сравнение
-          </button>
+          </Button>
         )}
       </div>
       {error && (
-        <p role="alert">
-          Не удалось изменить базовый снимок. Повторите попытку.
-        </p>
+        <Alert variant="destructive" role="alert">
+          <AlertDescription>
+            Не удалось изменить базовый снимок. Повторите попытку.
+          </AlertDescription>
+        </Alert>
       )}
       {baseline && comparison && (
         <>
-          <p className="scope">
+          <p className="comparison-baseline">
             Базовый снимок:{" "}
-            {new Date(baseline.capturedAt).toLocaleTimeString("ru-RU")}.
-            Сравниваем все записи, независимо от фильтров.
+            <time dateTime={new Date(baseline.capturedAt).toISOString()}>
+              {new Date(baseline.capturedAt).toLocaleTimeString("ru-RU")}
+            </time>
           </p>
-          <p className="comparison-count" role="status" aria-live="polite">
+          <p className="sr-only" role="status" aria-live="polite">
             Добавлено: {comparison.added.length}. Нет в текущем снимке:{" "}
             {comparison.missing.length}. Изменено: {comparison.changed.length}.
             Без изменений: {comparison.unchanged}.
           </p>
+          <div className="comparison-metrics">
+            <ComparisonMetric
+              label="Добавлено"
+              value={comparison.added.length}
+              tone="success"
+            />
+            <ComparisonMetric
+              label="Нет в текущем снимке"
+              value={comparison.missing.length}
+              tone="warning"
+            />
+            <ComparisonMetric
+              label="Изменено"
+              value={comparison.changed.length}
+              tone="info"
+            />
+            <ComparisonMetric
+              label="Без изменений"
+              value={comparison.unchanged}
+              tone="neutral"
+            />
+          </div>
+          <p className="scope">Сравниваем все записи независимо от фильтров.</p>
           <p className="scope">
             Отсутствие записи не доказывает удаление обработчика: возможны
             навигация фрейма или потеря данных.

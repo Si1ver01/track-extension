@@ -1,7 +1,37 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import {
+  Activity,
+  Camera,
+  CircleAlert,
+  GitCompare,
+  Globe,
+  List,
+  MoreHorizontal,
+  RefreshCw,
+  ShieldCheck,
+  ShieldX,
+} from "lucide-react";
+import { Alert, AlertDescription } from "../../components/ui/alert";
+import { Badge } from "../../components/ui/badge";
+import { Button } from "../../components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "../../components/ui/dropdown-menu";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "../../components/ui/tabs";
 import { useSiteAccess } from "./useSiteAccess";
 import { ResultsPanel } from "./ResultsPanel";
 import { CoverageNotice } from "./CoverageNotice";
+import { SnapshotComparison } from "./SnapshotComparison";
+import { SnapshotExport } from "./SnapshotExport";
+import type { ListenerRecord } from "../../shared/contracts/records";
 
 const statusMessages = {
   unsupported:
@@ -49,6 +79,7 @@ export function App() {
     changeBaseline,
   } = useSiteAccess();
   const statusRef = useRef<HTMLParagraphElement>(null);
+  const [visibleRecords, setVisibleRecords] = useState<ListenerRecord[]>([]);
   const status = snapshot?.status;
   const hasAccess =
     snapshot?.site && status !== "no-access" && status !== "unsupported";
@@ -66,70 +97,243 @@ export function App() {
       : status
         ? statusMessages[status]
         : "Проверяем доступ к сайту…";
+  const statusLabel = pending
+    ? "Ожидание"
+    : status === "ready"
+      ? "Сбор активен"
+      : status === "limited"
+        ? "Неполное покрытие"
+        : status === "no-access"
+          ? "Нет доступа"
+          : status === "reload-required"
+            ? "Нужна перезагрузка"
+            : status === "unsupported"
+              ? "Недоступно"
+              : issue || status === "error"
+                ? "Ошибка"
+                : "Проверка";
+  const statusClass =
+    status === "ready"
+      ? "status-ready"
+      : status === "limited"
+        ? "status-limited"
+        : status === "no-access" || status === "unsupported"
+          ? "status-blocked"
+          : "status-waiting";
+  const stateTitle =
+    status === "no-access"
+      ? "Разрешите сбор обработчиков"
+      : status === "reload-required"
+        ? "Начните сбор с загрузки страницы"
+        : status === "recovering" || pending
+          ? "Собираем обработчики…"
+          : status === "unsupported"
+            ? "Страница недоступна"
+            : issue || status === "error"
+              ? "Не удалось запустить сбор"
+              : "Проверяем доступ к сайту…";
 
   return (
-    <main aria-busy={Boolean(pending) || (!snapshot && !issue)}>
-      <h1>Listener Lens</h1>
-      {snapshot?.site && <p className="site">{snapshot.site.label}</p>}
-      <p ref={statusRef} tabIndex={-1} role="status" aria-live="polite">
-        {message}
-      </p>
-      {snapshot?.site && status !== "unsupported" && (
-        <p className="scope">
-          Доступ действует для всех страниц и портов этого адреса.
-        </p>
-      )}
-      <div className="actions">
-        {status === "no-access" && snapshot?.site && (
-          <button type="button" disabled={Boolean(pending)} onClick={grant}>
-            Разрешить для этого сайта
-          </button>
-        )}
-        {(status === "reload-required" || status === "limited") && (
-          <button type="button" disabled={Boolean(pending)} onClick={reload}>
-            Перезагрузить вкладку
-          </button>
-        )}
-        {(issue || status === "error") && (
-          <button type="button" disabled={Boolean(pending)} onClick={retry}>
-            Повторить проверку
-          </button>
-        )}
-        {hasAccess && (
-          <button
-            type="button"
-            className="secondary"
+    <div
+      className="app-shell"
+      aria-busy={Boolean(pending) || (!snapshot && !issue)}
+    >
+      <header className="app-header">
+        <div className="app-brand">
+          <span className="brand-mark" aria-hidden="true">
+            <Activity />
+          </span>
+          <h1>Listener Lens</h1>
+        </div>
+        <div className="header-actions">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Обновить данные"
+            title="Обновить данные"
             disabled={Boolean(pending)}
-            onClick={revoke}
+            onClick={retry}
           >
-            Отозвать доступ
-          </button>
-        )}
-      </div>
-      {showRecords && snapshot && (
-        <>
-          <CoverageNotice
-            coverage={snapshot.coverage}
-            limited={status === "limited"}
-          />
-          <ResultsPanel
-            key={JSON.stringify([
-              snapshot.tabId,
-              snapshot.site?.pattern,
-              snapshot.documentId,
-            ])}
-            records={snapshot.records}
-            partial={status === "limited"}
-            coverage={snapshot.coverage}
-            documentId={snapshot.documentId}
-            onRefresh={retry}
-            onReveal={reveal}
-            baseline={snapshot.baseline ?? null}
-            onBaselineChange={changeBaseline}
-          />
-          <p className="scope">Worker-контексты не поддерживаются в MVP.</p>
-        </>
+            <RefreshCw />
+          </Button>
+          {hasAccess && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label="Управление доступом"
+                  title="Управление доступом"
+                >
+                  <MoreHorizontal />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  disabled={Boolean(pending)}
+                  onSelect={() => revoke()}
+                >
+                  <ShieldX />
+                  Отозвать доступ
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+        </div>
+      </header>
+      {snapshot?.site && (
+        <div className="site-meta">
+          <span className="site-label">
+            <Globe aria-hidden="true" />
+            <span>{snapshot.site.label}</span>
+          </span>
+          <Badge variant="secondary" className={"status-badge " + statusClass}>
+            {statusLabel}
+          </Badge>
+        </div>
       )}
-    </main>
+      {showRecords && snapshot ? (
+        <>
+          <Tabs defaultValue="records" className="app-tabs">
+            <TabsList
+              className="app-tabs-list"
+              aria-label="Разделы Listener Lens"
+            >
+              <TabsTrigger value="records">
+                <List aria-hidden="true" />
+                Обработчики
+              </TabsTrigger>
+              <TabsTrigger value="comparison">
+                <GitCompare aria-hidden="true" />
+                Сравнение
+              </TabsTrigger>
+            </TabsList>
+            <TabsContent value="records" className="app-tab-panel">
+              <p
+                ref={statusRef}
+                className="sr-only"
+                tabIndex={-1}
+                role="status"
+                aria-live="polite"
+              >
+                {message}
+              </p>
+              <CoverageNotice
+                coverage={snapshot.coverage}
+                limited={status === "limited"}
+                onReload={reload}
+              />
+              <ResultsPanel
+                key={JSON.stringify([
+                  snapshot.tabId,
+                  snapshot.site?.pattern,
+                  snapshot.documentId,
+                ])}
+                records={snapshot.records}
+                partial={status === "limited"}
+                coverage={snapshot.coverage}
+                documentId={snapshot.documentId}
+                onRefresh={retry}
+                onReveal={reveal}
+                onVisibleRecordsChange={setVisibleRecords}
+                showExport={false}
+              />
+              <p className="scope">Worker-контексты не поддерживаются в MVP.</p>
+            </TabsContent>
+            <TabsContent value="comparison" className="app-tab-panel">
+              <SnapshotComparison
+                records={snapshot.records}
+                context={{
+                  partial: status === "limited",
+                  coverage: snapshot.coverage,
+                  documentId: snapshot.documentId,
+                }}
+                onRefresh={retry}
+                baseline={snapshot.baseline ?? null}
+                onBaselineChange={changeBaseline}
+                hideCaptureAction
+              />
+            </TabsContent>
+          </Tabs>
+          <footer className="app-footer" aria-label="Действия со снимком">
+            <Button
+              onClick={() => void changeBaseline(true)}
+              disabled={Boolean(pending)}
+            >
+              <Camera />
+              {snapshot.baseline ? "Заменить снимок" : "Запомнить снимок"}
+            </Button>
+            <SnapshotExport
+              records={snapshot.records}
+              visibleRecords={visibleRecords}
+              context={{
+                partial: status === "limited",
+                coverage: snapshot.coverage,
+                documentId: snapshot.documentId,
+              }}
+            />
+          </footer>
+        </>
+      ) : (
+        <main className="state-main">
+          <section className="state-content" aria-labelledby="state-title">
+            <span
+              className={
+                "state-icon " +
+                (issue || status === "error"
+                  ? "state-icon-danger"
+                  : status === "reload-required"
+                    ? "state-icon-warning"
+                    : "state-icon-neutral")
+              }
+              aria-hidden="true"
+            >
+              {issue || status === "error" ? <CircleAlert /> : <ShieldCheck />}
+            </span>
+            <h2 id="state-title">{stateTitle}</h2>
+            <Alert
+              ref={statusRef}
+              tabIndex={-1}
+              role={issue || status === "error" ? "alert" : "status"}
+              aria-live="polite"
+              variant={issue || status === "error" ? "destructive" : "default"}
+              className="status-alert"
+            >
+              <AlertDescription>{message}</AlertDescription>
+            </Alert>
+            <div className="state-actions">
+              {status === "no-access" && snapshot?.site && (
+                <Button disabled={Boolean(pending)} onClick={grant}>
+                  <ShieldCheck />
+                  Разрешить для этого сайта
+                </Button>
+              )}
+              {(status === "reload-required" || status === "limited") && (
+                <Button disabled={Boolean(pending)} onClick={reload}>
+                  <RefreshCw />
+                  Перезагрузить вкладку
+                </Button>
+              )}
+              {(issue || status === "error") && (
+                <Button disabled={Boolean(pending)} onClick={retry}>
+                  <RefreshCw />
+                  Повторить проверку
+                </Button>
+              )}
+            </div>
+            {snapshot?.site && status !== "unsupported" && (
+              <p className="scope state-scope">
+                Доступ действует для всех страниц и портов этого адреса.
+              </p>
+            )}
+          </section>
+          {hasAccess && (
+            <p className="state-footer">
+              Доступ к {snapshot?.site?.label} уже разрешён
+            </p>
+          )}
+        </main>
+      )}
+    </div>
   );
 }

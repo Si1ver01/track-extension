@@ -9,6 +9,13 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+function openExportMenu() {
+  fireEvent.pointerDown(screen.getByRole("button", { name: "Экспорт JSON" }), {
+    button: 0,
+    ctrlKey: false,
+  });
+}
+
 describe("Экспорт из панели", () => {
   it("применяет текущие фильтры только к экспорту выборки", () => {
     const download = vi
@@ -34,11 +41,13 @@ describe("Экспорт из панели", () => {
         documentId="main"
       />,
     );
+    fireEvent.click(screen.getByRole("button", { name: "Фильтры" }));
     fireEvent.change(
       screen.getByRole("combobox", { name: "Состояние обработчика" }),
       { target: { value: "removed" } },
     );
-    fireEvent.click(screen.getByRole("button", { name: "Экспорт выборки" }));
+    openExportMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Экспорт выборки/ }));
     expect(download.mock.calls[0]?.[0]).toMatchObject({
       scope: "filtered",
       totalCount: 2,
@@ -46,8 +55,9 @@ describe("Экспорт из панели", () => {
       documentId: "main",
       records: [{ id: "listener-1" }],
     });
+    openExportMenu();
     fireEvent.click(
-      screen.getByRole("button", { name: "Экспорт всего снимка" }),
+      screen.getByRole("menuitem", { name: /^Экспорт всего снимка/ }),
     );
     expect(download.mock.calls[1]?.[0]).toMatchObject({
       scope: "all",
@@ -60,7 +70,8 @@ describe("Экспорт из панели", () => {
     fireEvent.change(screen.getByRole("searchbox"), {
       target: { value: "missing" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Экспорт выборки" }));
+    openExportMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Экспорт выборки/ }));
     expect(download.mock.calls[2]?.[0].records).toEqual([]);
   });
 
@@ -69,8 +80,9 @@ describe("Экспорт из панели", () => {
       throw new Error("private-failure");
     });
     render(<ResultsPanel records={[]} partial={false} />);
+    openExportMenu();
     fireEvent.click(
-      screen.getByRole("button", { name: "Экспорт всего снимка" }),
+      screen.getByRole("menuitem", { name: /^Экспорт всего снимка/ }),
     );
     expect(screen.getByRole("status").textContent).toBe(
       "Не удалось сохранить JSON. Повторите попытку.",
