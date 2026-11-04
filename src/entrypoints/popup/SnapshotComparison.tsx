@@ -4,11 +4,7 @@ import { Alert, AlertDescription } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
 import type { ListenerRecord } from "../../shared/contracts/records";
 import type { ComparisonBaseline } from "../../shared/contracts/site-access";
-import {
-  compareSnapshots,
-  copySnapshotRecords,
-  recordIdentity,
-} from "./comparison";
+import { compareSnapshots, recordIdentity } from "./comparison";
 import type { SnapshotContext } from "./snapshots";
 
 function RecordLabel({ record }: { record: ListenerRecord }) {
@@ -77,10 +73,9 @@ export function SnapshotComparison({
       if (mounted.current) setBusy(false);
     }
   };
-  const current = useMemo(() => copySnapshotRecords(records), [records]);
   const comparison = useMemo(
-    () => (baseline ? compareSnapshots(baseline.records, current) : null),
-    [baseline, current],
+    () => (baseline ? compareSnapshots(baseline.records, records) : null),
+    [baseline, records],
   );
 
   return (

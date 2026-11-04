@@ -13,9 +13,9 @@ const states = new Map<number, TabState>();
 export function getTabState(tabId: number): TabState {
   return states.get(tabId) ?? { tabId, records: [], status: "scanning" };
 }
-export function addRecord(record: ListenerRecord): TabState {
-  const state = getTabState(record.tabId);
-  const identity = [
+
+function tabRecordIdentity(record: ListenerRecord): string {
+  return [
     record.tabId,
     record.frameId,
     record.documentId,
@@ -23,16 +23,13 @@ export function addRecord(record: ListenerRecord): TabState {
     record.listenerKey ?? record.id,
     record.eventType,
   ].join("|");
+}
+
+export function addRecord(record: ListenerRecord): TabState {
+  const state = getTabState(record.tabId);
+  const identity = tabRecordIdentity(record);
   const existingIndex = state.records.findIndex(
-    (entry) =>
-      [
-        entry.tabId,
-        entry.frameId,
-        entry.documentId,
-        entry.source.path,
-        entry.listenerKey ?? entry.id,
-        entry.eventType,
-      ].join("|") === identity,
+    (entry) => tabRecordIdentity(entry) === identity,
   );
   if (
     (existingIndex < 0 && state.records.length >= MAX_TAB_RECORDS) ||
