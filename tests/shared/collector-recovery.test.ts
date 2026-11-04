@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { CollectorRecovery } from "../../src/shared/collector-recovery";
 import { MAX_COLLECTOR_RECORDS } from "../../src/shared/contracts/collector";
 import { normalizeRecord } from "../../src/shared/records/normalize";
+import { installListenerHook } from "../../src/shared/detection/bridge";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -13,7 +14,7 @@ function deferred<T>() {
 
 function message(
   id = "listener-a",
-  lifecycle: "active" | "removed" = "active",
+  lifecycle: "active" | "removed" | "unknown" = "active",
 ) {
   return {
     type: "listener-record",
@@ -102,6 +103,26 @@ describe("восстановление транспорта сборщика", (
     expect(snapshots().at(-1)?.records).toEqual([
       expect.objectContaining({ id: "listener-a", lifecycle: "removed" }),
     ]);
+  });
+
+  it("передаёт допустимую причину неопределённости и очищает посторонние причины", async () => {
+    const { collector, snapshots } = fixture();
+    const value = message("listener-once", "unknown");
+    Object.assign(value.record, {
+      reasonCodes: ["LIFECYCLE_UNVERIFIED", "PRIVATE_REASON"],
+      listenerOptions: { capture: false, passive: null, once: null },
+    });
+    collector.accept(value);
+    await collector.connect();
+    expect(snapshots().at(-1)?.records).toEqual([
+      expect.objectContaining({
+        id: "listener-once",
+        lifecycle: "unknown",
+        reasonCodes: expect.arrayContaining(["LIFECYCLE_UNVERIFIED"]),
+        listenerOptions: { capture: false, passive: null, once: null },
+      }),
+    ]);
+    expect(JSON.stringify(snapshots().at(-1))).not.toContain("PRIVATE_REASON");
   });
 
   it("обозначает потерю только после вытеснения и сохраняет лимит при replay", async () => {
@@ -195,6 +216,56 @@ describe("восстановление транспорта сборщика", (
       id: "listener-a",
       lifecycle: "removed",
     });
+  });
+
+  it("сохраняет настоящий abort во время снимка и pause с тем же ID", async () => {
+    const { collector, send, snapshots, deliveries } = fixture();
+    const gate = deferred<unknown>();
+    send.mockImplementation(async (value) => {
+      if (value.type === "collector-start")
+        return {
+          allowed: true,
+          token: "token-live",
+          pattern: "https://example.test/*",
+        };
+      if (value.type === "collector-snapshot" && snapshots().length === 1)
+        return gate.promise;
+      return { stop: false };
+    });
+    const post = vi
+      .spyOn(window, "postMessage")
+      .mockImplementation((value) => collector.accept(value));
+    const dispose = installListenerHook(0, "test", "document-a");
+    try {
+      const target = document.createElement("button");
+      const controller = new AbortController();
+      target.addEventListener("click", vi.fn(), {
+        once: true,
+        signal: controller.signal,
+      });
+      const connecting = collector.connect();
+      await vi.waitFor(() => expect(snapshots()).toHaveLength(1));
+      const initial = (
+        snapshots()[0]!.records as { id: string; lifecycle: string }[]
+      )[0]!;
+      expect(initial.lifecycle).toBe("unknown");
+      controller.abort();
+      gate.resolve({ stop: false });
+      await connecting;
+      await vi.waitFor(() => expect(deliveries()).toHaveLength(1));
+      expect(deliveries()[0]!.record).toMatchObject({
+        id: initial.id,
+        lifecycle: "removed",
+      });
+      collector.pause();
+      await collector.resume();
+      expect(snapshots().at(-1)!.records).toEqual([
+        expect.objectContaining({ id: initial.id, lifecycle: "removed" }),
+      ]);
+    } finally {
+      dispose();
+      post.mockRestore();
+    }
   });
 
   it("игнорирует запоздалый stop старого поколения после возобновления", async () => {

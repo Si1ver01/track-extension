@@ -508,6 +508,48 @@ describe("persistent site access", () => {
     expect(state.records[0]?.lifecycle).toBe("removed");
   });
 
+  it("сохраняет lifecycle metadata при replay и не считает неопределённость потерей покрытия", async () => {
+    const { controller } = fixture();
+    const session = await ready(controller);
+    const original = record(session.token).record;
+    const uncertain = {
+      ...original,
+      lifecycle: "unknown",
+      reasonCodes: ["LIFECYCLE_UNVERIFIED"],
+      listenerOptions: { capture: false, once: null, passive: null },
+    };
+    await controller.handleMessage(
+      {
+        type: "collector-snapshot",
+        token: session.token,
+        records: [uncertain],
+      },
+      sender,
+    );
+    const state = await controller.snapshot(10);
+    expect(state.records).toEqual([
+      expect.objectContaining({
+        id: original.id,
+        lifecycle: "unknown",
+        reasonCodes: expect.arrayContaining(["LIFECYCLE_UNVERIFIED"]),
+        listenerOptions: uncertain.listenerOptions,
+      }),
+    ]);
+    expect(state.status).toBe("ready");
+    expect(state.coverage?.reasons ?? []).not.toContain("LIFECYCLE_UNVERIFIED");
+    await controller.handleMessage(
+      {
+        type: "listener-record",
+        token: session.token,
+        record: { ...uncertain, lifecycle: "removed", reasonCodes: [] },
+      },
+      sender,
+    );
+    expect((await controller.snapshot(10)).records).toEqual([
+      expect.objectContaining({ id: original.id, lifecycle: "removed" }),
+    ]);
+  });
+
   it("отклоняет слишком большой снимок до изменения состояния", async () => {
     const { controller } = fixture();
     const session = await ready(controller);

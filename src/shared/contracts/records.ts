@@ -7,6 +7,7 @@ export type ListenerSourceKind =
   "add-event-listener" | "event-handler-property" | "inline-attribute";
 export type ListenerReasonCode =
   | "HOOK_LATE"
+  | "LIFECYCLE_UNVERIFIED"
   | "SURFACE_UNVERIFIED"
   | "RECORD_TRUNCATED"
   | "RECORD_LIMIT_REACHED"

@@ -5,13 +5,18 @@ import type {
   ListenerTarget,
   PageContextKind,
 } from "../contracts/records";
-import { createListenerKey, ListenerRegistry } from "./registry";
+import {
+  createListenerKey,
+  ListenerRegistry,
+  type RegistrationIdentity,
+} from "./registry";
 import { installHandlerSurfaces } from "./handler-surfaces";
 import { createLogger } from "../logger";
 import { createId } from "../id";
 import { isSupportedEventType } from "../event-catalog/catalog";
 import { ListenerTargets } from "./targets";
 import { safeMetadataId } from "../records/sanitize";
+import { AbortObserver } from "./abort-observer";
 
 const logger = createLogger("detection.bridge");
 
@@ -62,10 +67,46 @@ export function installListenerHook(
   let active = true;
   const original = EventTarget.prototype.addEventListener;
   const originalRemove = EventTarget.prototype.removeEventListener;
+  const abortedGetter = Object.getOwnPropertyDescriptor(
+    AbortSignal.prototype,
+    "aborted",
+  )?.get;
+  const readSignalAborted = (signal: AbortSignal): boolean => {
+    if (!abortedGetter) throw new Error("native AbortSignal state unavailable");
+    return abortedGetter.call(signal) as boolean;
+  };
   const getRootNode = Node.prototype.getRootNode;
   const addWindowListener = window.addEventListener.bind(window);
   const removeWindowListener = window.removeEventListener.bind(window);
   const registry = new ListenerRegistry();
+  const abortObserver = new AbortObserver(
+    AbortSignal.prototype.addEventListener,
+    AbortSignal.prototype.removeEventListener,
+    readSignalAborted,
+  );
+  const observeSignal = (
+    identity: RegistrationIdentity,
+    key: string,
+    generation: number,
+    signal: AbortSignal,
+    message: BridgeRecordMessage,
+  ) =>
+    abortObserver.observe(
+      key,
+      generation,
+      signal,
+      () => {
+        if (!active) return;
+        const removed = registry.remove(identity, generation);
+        if (removed) window.postMessage({ ...message, record: removed }, "*");
+      },
+      () => {
+        if (!active) return;
+        const uncertain = registry.markUnverified(identity, generation);
+        if (uncertain)
+          window.postMessage({ ...message, record: uncertain }, "*");
+      },
+    );
   const targets = new ListenerTargets();
   const listenerKeys = new WeakMap<object, string>();
   const keyFor = (listener: EventListenerOrEventListenerObject) => {
@@ -105,8 +146,8 @@ export function installListenerHook(
       nativeOptions: { capture, passive, once, signal },
       listenerOptions: {
         capture: Boolean(capture),
-        passive: passive ?? null,
-        once: once ?? null,
+        passive: passive == null ? null : Boolean(passive),
+        once: once == null ? null : Boolean(once),
       },
       signal,
     };
@@ -218,7 +259,17 @@ export function installListenerHook(
       listener,
       parsedOptions.nativeOptions,
     );
-    if (listener == null || parsedOptions.signal?.aborted) return result;
+    if (listener == null) return result;
+    let signalStateKnown = true;
+    let signalAborted = false;
+    if (parsedOptions.signal) {
+      try {
+        signalAborted = readSignalAborted(parsedOptions.signal);
+      } catch {
+        signalStateKnown = false;
+      }
+    }
+    if (signalAborted) return result;
     try {
       const listenerKey = keyFor(listener);
       const listenerOptions = parsedOptions.listenerOptions;
@@ -239,17 +290,38 @@ export function installListenerHook(
         },
       );
       if (message) {
-        const entry = registry.add(
-          {
-            eventType,
-            targetPath: info.path,
-            targetId: info.targetId,
-            capture: listenerOptions.capture,
-            listenerKey,
-          },
-          message.record!,
-        );
-        targets.remember(entry.id, this);
+        const identity = {
+          eventType,
+          targetPath: info.path,
+          targetId: info.targetId,
+          capture: listenerOptions.capture,
+          listenerKey,
+        };
+        const previous = registry.current(identity);
+        if (previous) abortObserver.reconcile(previous.listenerKey);
+        const registration = registry.register(identity, message.record!);
+        let entry = registration.entry;
+        if (registration.change === "ambiguous")
+          abortObserver.forget(entry.listenerKey, registration.generation!);
+        if (registration.change === "new" && parsedOptions.signal) {
+          if (
+            !signalStateKnown ||
+            !observeSignal(
+              identity,
+              entry.listenerKey,
+              registration.generation!,
+              parsedOptions.signal,
+              message,
+            )
+          ) {
+            entry =
+              registry.markUnverified(identity, registration.generation!) ??
+              entry;
+            logger.warn("signal observation unavailable");
+          }
+          entry = registry.current(identity, registration.generation!) ?? entry;
+        }
+        if (registration.change !== "limited") targets.remember(entry.id, this);
         window.postMessage({ ...message, record: entry }, "*");
       }
     } catch {
@@ -311,14 +383,16 @@ export function installListenerHook(
     try {
       const listenerKey = keyFor(listener);
       const info = targetInfo(this);
-      const removed = registry.remove({
+      const identity = {
         eventType,
         targetPath: info.path,
         targetId: info.targetId,
         capture: parsedOptions.capture,
         listenerKey,
-      });
-      if (removed)
+      };
+      const removed = registry.remove(identity);
+      if (removed) {
+        abortObserver.forget(removed.listenerKey);
         window.postMessage(
           {
             source: "listener-lens",
@@ -328,6 +402,7 @@ export function installListenerHook(
           },
           "*",
         );
+      }
     } catch {
       // Сбой сбора метаданных не должен менять результат DOM API.
     }
@@ -390,6 +465,8 @@ export function installListenerHook(
   return () => {
     if (!active) return;
     active = false;
+    abortObserver.dispose();
+    registry.clear();
     targets.clear();
     surfaces.dispose();
     if (EventTarget.prototype.addEventListener === installedAdd)

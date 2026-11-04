@@ -256,6 +256,295 @@ describe("bridge messages", () => {
     }
   });
 
+  it("marks a truthy once registration uncertain without observing callback calls", () => {
+    const post = vi.spyOn(window, "postMessage").mockImplementation(() => {});
+    const dispose = installListenerHook(7, "nonce-1", "document-1");
+    const target = document.createElement("button");
+    const listener = vi.fn();
+    let onceReads = 0;
+    const options = {
+      get once() {
+        onceReads += 1;
+        return "enabled" as unknown as boolean;
+      },
+    };
+
+    try {
+      target.addEventListener("click", listener, options);
+      const records = post.mock.calls
+        .map(([message]) => message as BridgeRecordMessage)
+        .filter((message) => message.type === "listener-record")
+        .map((message) => message.record);
+      expect(onceReads).toBe(1);
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({
+        lifecycle: "unknown",
+        reasonCodes: ["LIFECYCLE_UNVERIFIED"],
+        listenerOptions: { capture: false, once: true },
+      });
+      target.dispatchEvent(new Event("click"));
+      target.dispatchEvent(new Event("click"));
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(
+        post.mock.calls.filter(
+          ([message]) =>
+            (message as BridgeRecordMessage).type === "listener-record",
+        ),
+      ).toHaveLength(1);
+    } finally {
+      dispose();
+      post.mockRestore();
+    }
+  });
+
+  it("publishes a removed tombstone after the bound signal aborts", () => {
+    const post = vi.spyOn(window, "postMessage").mockImplementation(() => {});
+    const dispose = installListenerHook(7, "nonce-1", "document-1");
+    const target = document.createElement("button");
+    const listener = vi.fn();
+    const controller = new window.AbortController();
+
+    try {
+      target.addEventListener("click", listener, { signal: controller.signal });
+      controller.abort();
+      target.dispatchEvent(new Event("click"));
+      expect(listener).not.toHaveBeenCalled();
+      const records = post.mock.calls
+        .map(([message]) => message as BridgeRecordMessage)
+        .filter((message) => message.type === "listener-record")
+        .map((message) => message.record);
+      expect(records.map((record) => record?.lifecycle)).toEqual([
+        "active",
+        "removed",
+      ]);
+      expect(records[1]?.id).toBe(records[0]?.id);
+    } finally {
+      dispose();
+      post.mockRestore();
+    }
+  });
+
+  it("ignores old and ambiguous signals and preserves page listeners after dispose", () => {
+    const post = vi.spyOn(window, "postMessage").mockImplementation(() => {});
+    const dispose = installListenerHook(7, "nonce-1", "document-1");
+    const target = document.createElement("button");
+    const listener = vi.fn();
+    const first = new AbortController();
+    const current = new AbortController();
+    const lastRecord = () =>
+      post.mock.calls
+        .map(([message]) => message as BridgeRecordMessage)
+        .filter((message) => message.type === "listener-record")
+        .at(-1)?.record;
+    try {
+      target.addEventListener("click", listener, { signal: first.signal });
+      const firstId = lastRecord()!.id;
+      target.removeEventListener("click", listener);
+      target.addEventListener("click", listener, {
+        once: true,
+        signal: current.signal,
+      });
+      const currentId = lastRecord()!.id;
+      expect(currentId).not.toBe(firstId);
+      first.abort();
+      expect(lastRecord()).toMatchObject({
+        id: currentId,
+        lifecycle: "unknown",
+      });
+      target.addEventListener("click", listener);
+      current.abort();
+      expect(lastRecord()).toMatchObject({
+        id: currentId,
+        lifecycle: "unknown",
+        listenerOptions: { once: null },
+      });
+      target.removeEventListener("click", listener);
+      const afterDispose = vi.fn();
+      const controller = new AbortController();
+      target.addEventListener("click", listener, { signal: controller.signal });
+      target.addEventListener("click", afterDispose);
+      dispose();
+      dispose();
+      const count = post.mock.calls.length;
+      controller.abort();
+      target.dispatchEvent(new Event("click"));
+      expect(afterDispose).toHaveBeenCalledTimes(1);
+      expect(listener).not.toHaveBeenCalled();
+      expect(post).toHaveBeenCalledTimes(count);
+    } finally {
+      dispose();
+      post.mockRestore();
+    }
+  });
+
+  it("removes each capture identity sharing a once signal", () => {
+    const post = vi.spyOn(window, "postMessage").mockImplementation(() => {});
+    const dispose = installListenerHook(7, "nonce-1", "document-1");
+    const target = document.createElement("button");
+    const listener = vi.fn();
+    const controller = new AbortController();
+    try {
+      target.addEventListener("click", listener, {
+        once: true,
+        signal: controller.signal,
+      });
+      target.addEventListener("click", listener, {
+        once: true,
+        capture: true,
+        signal: controller.signal,
+      });
+      controller.abort();
+      const records = post.mock.calls
+        .map(([message]) => message as BridgeRecordMessage)
+        .filter((message) => message.type === "listener-record")
+        .map((message) => message.record!);
+      expect(records.map((record) => record.lifecycle)).toEqual([
+        "unknown",
+        "unknown",
+        "removed",
+        "removed",
+      ]);
+      expect(records[2]?.id).toBe(records[0]?.id);
+      expect(records[3]?.id).toBe(records[1]?.id);
+      expect(records[2]?.reasonCodes).not.toContain("LIFECYCLE_UNVERIFIED");
+      target.dispatchEvent(new Event("click"));
+      expect(listener).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+      post.mockRestore();
+    }
+  });
+
+  it("reconciles abort before a reentrant registration from an earlier signal listener", () => {
+    const first = new AbortController();
+    const second = new AbortController();
+    const target = document.createElement("button");
+    const listener = vi.fn();
+    first.signal.addEventListener("abort", () => {
+      target.addEventListener("click", listener, { signal: second.signal });
+    });
+    const post = vi.spyOn(window, "postMessage").mockImplementation(() => {});
+    const dispose = installListenerHook(7, "nonce-1", "document-1");
+    const records = () =>
+      post.mock.calls
+        .map(([message]) => message as BridgeRecordMessage)
+        .filter((message) => message.type === "listener-record")
+        .map((message) => message.record!);
+    try {
+      target.addEventListener("click", listener, { signal: first.signal });
+      const oldId = records()[0]!.id;
+      first.abort();
+      const current = records().at(-1)!;
+      expect(current.lifecycle).toBe("active");
+      expect(current.id).not.toBe(oldId);
+      // Реальное число вызовов при реэнтрантном abort проверяет browser suite:
+      // jsdom использует abort-событие вместо внутренних браузерных abort steps.
+      second.abort();
+      expect(records().at(-1)).toMatchObject({
+        id: current.id,
+        lifecycle: "removed",
+      });
+    } finally {
+      dispose();
+      post.mockRestore();
+    }
+  });
+
+  it("preserves original options and signal on an ordinary duplicate", () => {
+    const post = vi.spyOn(window, "postMessage").mockImplementation(() => {});
+    const dispose = installListenerHook(7, "nonce-1", "document-1");
+    const target = document.createElement("button");
+    const listener = vi.fn();
+    const first = new window.AbortController();
+    const duplicate = new window.AbortController();
+
+    try {
+      target.addEventListener("click", listener, {
+        passive: true,
+        signal: first.signal,
+      });
+      target.addEventListener("click", listener, {
+        once: true,
+        passive: false,
+        signal: duplicate.signal,
+      });
+      duplicate.abort();
+      target.dispatchEvent(new Event("click"));
+      target.dispatchEvent(new Event("click"));
+      expect(listener).toHaveBeenCalledTimes(2);
+      const records = post.mock.calls
+        .map(([message]) => message as BridgeRecordMessage)
+        .filter((message) => message.type === "listener-record")
+        .map((message) => message.record);
+      expect(records[0]?.id).toBe(records[1]?.id);
+      expect(records[1]?.listenerOptions).toEqual(records[0]?.listenerOptions);
+      expect(records[1]?.lifecycle).toBe("active");
+      first.abort();
+      const latest = post.mock.calls
+        .map(([message]) => message as BridgeRecordMessage)
+        .filter((message) => message.type === "listener-record")
+        .at(-1)?.record;
+      expect(latest?.lifecycle).toBe("removed");
+      expect(latest?.id).toBe(records[0]?.id);
+    } finally {
+      dispose();
+      post.mockRestore();
+    }
+  });
+
+  it.each([false, true])(
+    "keeps once readd uncertain after dispatch=%s",
+    (dispatchBeforeReadd) => {
+      const post = vi.spyOn(window, "postMessage").mockImplementation(() => {});
+      const dispose = installListenerHook(7, "nonce-1", "document-1");
+      const target = document.createElement("button");
+      const listener = vi.fn();
+
+      try {
+        target.addEventListener("click", listener, {
+          once: true,
+          passive: true,
+        });
+        if (dispatchBeforeReadd) target.dispatchEvent(new Event("click"));
+        target.addEventListener("click", listener, {
+          once: false,
+          passive: false,
+        });
+        const records = post.mock.calls
+          .map(([message]) => message as BridgeRecordMessage)
+          .filter((message) => message.type === "listener-record")
+          .map((message) => message.record);
+        expect(records).toHaveLength(2);
+        expect(records[1]?.id).toBe(records[0]?.id);
+        expect(records[1]).toMatchObject({
+          lifecycle: "unknown",
+          reasonCodes: ["LIFECYCLE_UNVERIFIED"],
+          listenerOptions: { capture: false, once: null, passive: null },
+        });
+        target.dispatchEvent(new Event("click"));
+        target.dispatchEvent(new Event("click"));
+        expect(listener).toHaveBeenCalledTimes(dispatchBeforeReadd ? 3 : 1);
+        target.removeEventListener("click", listener);
+        const removed = post.mock.calls
+          .map(([message]) => message as BridgeRecordMessage)
+          .filter((message) => message.type === "listener-record")
+          .at(-1)?.record;
+        expect(removed?.lifecycle).toBe("removed");
+        expect(removed?.id).toBe(records[0]?.id);
+        target.addEventListener("click", listener);
+        const readded = post.mock.calls
+          .map(([message]) => message as BridgeRecordMessage)
+          .filter((message) => message.type === "listener-record")
+          .at(-1)?.record;
+        expect(readded?.id).not.toBe(records[0]?.id);
+        expect(readded?.lifecycle).toBe("active");
+      } finally {
+        dispose();
+        post.mockRestore();
+      }
+    },
+  );
+
   it("posts the handshake only after bridge injection completes", async () => {
     let completeInjection!: () => void;
     const injectBridge = vi.fn(

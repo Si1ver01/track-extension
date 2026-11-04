@@ -4,6 +4,7 @@ import { normalizeRecord } from "./normalize";
 
 const reasonCodes = new Set<ListenerReasonCode>([
   "HOOK_LATE",
+  "LIFECYCLE_UNVERIFIED",
   "SURFACE_UNVERIFIED",
   "RECORD_TRUNCATED",
   "RECORD_LIMIT_REACHED",
