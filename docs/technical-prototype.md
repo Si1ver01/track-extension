@@ -56,11 +56,15 @@ Unit и integration tests проверяют границы site scope, норм
 
 Общий сценарий `tests/e2e/detection-coverage.mjs` проверяет property/inline assign, replace, remove и readd со стабильным ID, нативные getter и `return false`, новые open/closed Shadow DOM, три перехода SPA, замену документа при полной навигации, переполнение буфера и отсутствие тестовых секретов в снимке. Отдельная регистрация после подтверждения установки сборщиков проверяет разрешённый iframe и изоляцию фрейма другого hostname.
 
-Сценарий прошёл 18 октября 2026 года на Playwright Chromium `153.0.8010.12` и Firefox `155.0` с установленными production-сборками расширения.
+4 ноября 2026 года расширенный сценарий прошёл на Playwright Chromium `153.0.8010.12` и Firefox `155.0` с установленными production-сборками расширения. Также прошли 433 unit/integration-теста, `lint`, `typecheck`, `format:check`, обе сборки и `verify:build`.
+
+Lifecycle-проверки в том же fixture охватывают once до и после dispatch, truthy WebIDL options и однократное чтение getter, duplicate с другим signal, shared signal и capture, синтетический abort, старый signal после remove/readd, реэнтрантный add из abort-обработчика и скрытое уведомление через `stopImmediatePropagation`. Число вызовов в сценариях повторной регистрации сравнивается с контролем вне каталога; результат браузера не подменяется моделью jsdom. Настоящий action popup проверяет `unknown`/`removed`, пояснение, независимый baseline, diff и очищенный JSON версии `1`; Chromium дополнительно проверяет ширины 320/400 px и фокус заголовка карточки.
 
 Проверка BFCache требует настоящего перехода A → B → назад: fixture должна получить `pageshow.persisted=true` и сохранить случайный токен документа. Проверяем автоматическое восстановление прежнего `documentId`, ID записей и ограничения буфера, затем изменение lifecycle без дублей. Отдельный сценарий отзывает доступ, пока документ заморожен, и проверяет отсутствие результатов после возврата. Для Chromium убираем флаг Playwright `--disable-back-forward-cache`. В тестовой сборке Firefox после запуска включаем `fission.bfcacheInParent` через Marionette: startup сбрасывает значение из профиля. Синтетическое событие или повторная загрузка страницы не засчитываются.
 
 Background перезапускаем дважды: для восстановления без новых регистраций по запросу popup и для восстановления при новой регистрации после переполнения. В Chromium CDP останавливает настоящий service worker; проверяем событие остановки и исчезновение контрольного значения из его памяти. В Firefox Marionette завершает background context; после обычного сообщения должен появиться новый context ID. Обновление add-on проверяется отдельно и не заменяет перезапуск background.
+
+Replay после restart и настоящего BFCache сохраняет ID, lifecycle, reasonCodes и nullable options. После возврата once-регистрация продолжает наблюдать отмену и получает `removed` с прежним ID. BFCache приостанавливает transport, сохраняя hook и metadata; окончательная остановка или revoke очищает служебные подписки, а поздний abort не возобновляет доставку.
 
 Допустимые имена регистраций и русские описания задаёт единый модуль `src/shared/event-catalog/catalog.ts`. Bridge, проверка inline/property surfaces и production background используют один каталог из 37 типов. В `addEventListener` и сообщениях background имена проверяются с учётом регистра; HTML-атрибуты нормализуются при чтении поверхности. Список групп и ограничения приведены в [каталоге событий](event-catalog.md).
 
@@ -76,11 +80,19 @@ Hook устанавливается best-effort на `document_start`. Скри�
 
 Property hooks сохраняют нативные configurable accessors `on...` на `window`, `document` и поддерживаемых DOM-прототипах. Callback не оборачивается; forwarding-свойства `body`/`frameset` для `blur`, `error`, `focus`, `load`, `scroll` используют общий slot с `window`. Собственные descriptors страницы могут обойти hook. Inline observer отслеживает имена атрибутов, их изменения и вставленные поддеревья, не читая код атрибутов. Изменения одного inline slot в пределах microtask объединяются по текущему состоянию.
 
+Реестр `addEventListener` отделяет публичный lifecycle от внутреннего slot и поколения. Обычный duplicate сохраняет исходные options и signal. Once сразу получает `unknown`; повторный add без подтверждённого удаления делает slot неоднозначным и сбрасывает `once`/`passive` в `null`. Callback страницы передаётся нативному API без обёртки, срабатывания не отслеживаются.
+
+`AbortObserver` использует сохранённые методы и getter `AbortSignal.aborted`, слабую ссылку на signal и не удерживает target или callback страницы. Подписки ограничены 2000 отслеживаемыми slot, обычный duplicate их не умножает. Перед повторным add сверяем отмену прежнего binding: это защищает поколение при реэнтрантном readd из более раннего abort-обработчика. Explicit remove, неоднозначный readd и dispose снимают прежнюю подписку; ошибки наблюдения не меняют результат нативного API.
+
+Настоящий abort текущей однозначной связи создаёт tombstone `removed` с тем же ID. Синтетический abort и прежний signal не служат подтверждением удаления новой записи. Ранее установленный `stopImmediatePropagation` может скрыть уведомление: `active` означает наблюдённую регистрацию, а не точную текущую инвентаризацию. Сбой установки observer даёт `unknown` с `LIFECYCLE_UNVERIFIED`; этот код проходит whitelist live/replay/export и не меняет `coverage`. Формат экспорта остаётся `listener-lens-snapshot` версии `1`.
+
 Firefox `gecko.id` в прототипе использует placeholder `listener-lens@example.invalid`. Перед публикацией его нужно заменить на контролируемый стабильный ID и повторить privacy/manifest audit.
 
 ## Логирование
 
 В development `createLogger` использует `DEBUG`; уровень можно изменить через `globalThis.LOG_LEVEL` (`debug`, `info`, `warn`, `error`) в нужном контексте. В production порог — `WARN`. Диагностика доступа содержит ID операции/вкладки/документа и код причины, без URL, nonce и пользовательских данных.
+
+`detection.registry` и `detection.abort` выводят переходы, номера поколений и число подписок. `WARN` сообщает о сбое наблюдения без signal, Event, callback, target и содержимого страницы.
 
 ## См. также
 
