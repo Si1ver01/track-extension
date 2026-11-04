@@ -85,12 +85,40 @@ export function installListenerHook(
     options: boolean | AddEventListenerOptions | undefined,
   ) => {
     if (typeof options === "boolean")
-      return { capture: options, passive: null, once: null };
+      return {
+        nativeOptions: options,
+        listenerOptions: { capture: options, passive: null, once: null },
+        signal: undefined,
+      };
+    if (options == null)
+      return {
+        nativeOptions: options,
+        listenerOptions: { capture: false, passive: null, once: null },
+        signal: undefined,
+      };
+    const dictionary = Object(options) as AddEventListenerOptions;
+    const capture = dictionary.capture;
+    const passive = dictionary.passive;
+    const once = dictionary.once;
+    const signal = dictionary.signal;
     return {
-      capture: options?.capture ?? false,
-      passive: options?.passive ?? null,
-      once: options?.once ?? null,
+      nativeOptions: { capture, passive, once, signal },
+      listenerOptions: {
+        capture: Boolean(capture),
+        passive: passive ?? null,
+        once: once ?? null,
+      },
+      signal,
     };
+  };
+  const captureForRemoval = (
+    options: boolean | EventListenerOptions | undefined,
+  ) => {
+    if (typeof options === "boolean")
+      return { nativeOptions: options, capture: options };
+    if (options == null) return { nativeOptions: options, capture: false };
+    const capture = (Object(options) as EventListenerOptions).capture;
+    return { nativeOptions: { capture }, capture: Boolean(capture) };
   };
   const targetIds = new WeakMap<object, string>();
   const documentId = contextDocumentId || createId();
@@ -182,40 +210,52 @@ export function installListenerHook(
   };
   EventTarget.prototype.addEventListener = function (type, listener, options) {
     if (!active) return original.call(this, type, listener, options);
-    const eventType = String(type);
-    const listenerKey = keyFor(listener ?? (() => undefined));
-    const listenerOptions = optionsFor(options);
-    const info = targetInfo(this);
-    const message = createBridgeMessage(
+    const eventType = `${type}`;
+    const parsedOptions = optionsFor(options);
+    const result = original.call(
+      this,
       eventType,
-      tabId,
-      info.path,
-      nonce,
-      "active",
-      listenerKey,
-      listenerOptions,
-      {
-        documentId,
-        contextKind: info.contextKind,
-        target: info.target,
-        targetId: info.targetId,
-      },
+      listener,
+      parsedOptions.nativeOptions,
     );
-    if (message) {
-      const entry = registry.add(
+    if (listener == null || parsedOptions.signal?.aborted) return result;
+    try {
+      const listenerKey = keyFor(listener);
+      const listenerOptions = parsedOptions.listenerOptions;
+      const info = targetInfo(this);
+      const message = createBridgeMessage(
+        eventType,
+        tabId,
+        info.path,
+        nonce,
+        "active",
+        listenerKey,
+        listenerOptions,
         {
-          eventType,
-          targetPath: info.path,
+          documentId,
+          contextKind: info.contextKind,
+          target: info.target,
           targetId: info.targetId,
-          capture: listenerOptions.capture,
-          listenerKey,
         },
-        message.record!,
       );
-      targets.remember(entry.id, this);
-      window.postMessage({ ...message, record: entry }, "*");
+      if (message) {
+        const entry = registry.add(
+          {
+            eventType,
+            targetPath: info.path,
+            targetId: info.targetId,
+            capture: listenerOptions.capture,
+            listenerKey,
+          },
+          message.record!,
+        );
+        targets.remember(entry.id, this);
+        window.postMessage({ ...message, record: entry }, "*");
+      }
+    } catch {
+      // Сбой сбора метаданных не должен менять результат DOM API.
     }
-    return original.call(this, type, listener, options);
+    return result;
   };
   const surfaces = installHandlerSurfaces((surface) => {
     if (!active) return;
@@ -259,28 +299,39 @@ export function installListenerHook(
     options,
   ) {
     if (!active) return originalRemove.call(this, type, listener, options);
-    const eventType = String(type);
-    const listenerKey = keyFor(listener ?? (() => undefined));
-    const listenerOptions = optionsFor(options);
-    const info = targetInfo(this);
-    const removed = registry.remove({
+    const eventType = `${type}`;
+    const parsedOptions = captureForRemoval(options);
+    const result = originalRemove.call(
+      this,
       eventType,
-      targetPath: info.path,
-      targetId: info.targetId,
-      capture: listenerOptions.capture,
-      listenerKey,
-    });
-    if (removed)
-      window.postMessage(
-        {
-          source: "listener-lens",
-          nonce,
-          type: "listener-record",
-          record: removed,
-        },
-        "*",
-      );
-    return originalRemove.call(this, type, listener, options);
+      listener,
+      parsedOptions.nativeOptions,
+    );
+    if (listener == null) return result;
+    try {
+      const listenerKey = keyFor(listener);
+      const info = targetInfo(this);
+      const removed = registry.remove({
+        eventType,
+        targetPath: info.path,
+        targetId: info.targetId,
+        capture: parsedOptions.capture,
+        listenerKey,
+      });
+      if (removed)
+        window.postMessage(
+          {
+            source: "listener-lens",
+            nonce,
+            type: "listener-record",
+            record: removed,
+          },
+          "*",
+        );
+    } catch {
+      // Сбой сбора метаданных не должен менять результат DOM API.
+    }
+    return result;
   };
   const originalAttachShadow = Element.prototype.attachShadow;
   Element.prototype.attachShadow = function (init: ShadowRootInit) {

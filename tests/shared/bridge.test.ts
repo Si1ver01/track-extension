@@ -155,6 +155,107 @@ describe("bridge messages", () => {
     }
   });
 
+  it("не записывает null-listener и регистрации с уже отменённым signal", () => {
+    const post = vi.spyOn(window, "postMessage").mockImplementation(() => {});
+    const dispose = installListenerHook(7, "nonce-1", "document-1");
+    const target = document.createElement("button");
+    const controller = new AbortController();
+    controller.abort();
+
+    try {
+      target.addEventListener("click", null as unknown as EventListener);
+      target.removeEventListener("click", null as unknown as EventListener);
+      target.addEventListener("click", vi.fn(), { signal: controller.signal });
+
+      const records = post.mock.calls
+        .map(([message]) => message as BridgeRecordMessage)
+        .filter((message) => message.type === "listener-record");
+      expect(records).toHaveLength(0);
+    } finally {
+      dispose();
+      post.mockRestore();
+    }
+  });
+
+  it("сохраняет нативную регистрацию при ошибке передачи метаданных", () => {
+    const post = vi.spyOn(window, "postMessage").mockImplementation(() => {
+      throw new Error("bridge unavailable");
+    });
+    const dispose = installListenerHook(7, "nonce-1", "document-1");
+    const target = document.createElement("button");
+    const listener = vi.fn();
+
+    try {
+      expect(() => target.addEventListener("click", listener)).not.toThrow();
+      expect(() => target.removeEventListener("click", listener)).not.toThrow();
+      target.dispatchEvent(new Event("click"));
+      expect(listener).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+      post.mockRestore();
+    }
+  });
+
+  it("reads listener options once and preserves native removal semantics", () => {
+    const post = vi.spyOn(window, "postMessage").mockImplementation(() => {});
+    const dispose = installListenerHook(7, "nonce-1", "document-1");
+    const target = document.createElement("button");
+    const listener = vi.fn();
+    let typeReads = 0;
+    let captureReads = 0;
+    let removalCaptureReads = 0;
+    const eventType = {
+      toString() {
+        typeReads += 1;
+        return "click";
+      },
+    } as unknown as string;
+    const options = {
+      get capture() {
+        captureReads += 1;
+        return true;
+      },
+    };
+    const removalOptions = {
+      get capture() {
+        removalCaptureReads += 1;
+        return true;
+      },
+      get passive() {
+        throw new Error("removeEventListener must ignore passive");
+      },
+      get once() {
+        throw new Error("removeEventListener must ignore once");
+      },
+      get signal() {
+        throw new Error("removeEventListener must ignore signal");
+      },
+    };
+
+    try {
+      target.addEventListener(eventType, listener, options);
+      target.removeEventListener(eventType, listener, removalOptions);
+      target.dispatchEvent(new Event("click"));
+
+      expect(typeReads).toBe(2);
+      expect(captureReads).toBe(1);
+      expect(removalCaptureReads).toBe(1);
+      expect(listener).not.toHaveBeenCalled();
+      const records = post.mock.calls
+        .map(([message]) => message as BridgeRecordMessage)
+        .filter((message) => message.type === "listener-record")
+        .map((message) => message.record);
+      expect(records.map((record) => record?.lifecycle)).toEqual([
+        "active",
+        "removed",
+      ]);
+      expect(records[0]?.listenerOptions?.capture).toBe(true);
+    } finally {
+      dispose();
+      post.mockRestore();
+    }
+  });
+
   it("posts the handshake only after bridge injection completes", async () => {
     let completeInjection!: () => void;
     const injectBridge = vi.fn(
