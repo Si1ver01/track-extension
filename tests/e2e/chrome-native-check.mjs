@@ -1,13 +1,12 @@
 import { chromium } from "@playwright/test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { createReadStream } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
-import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
+import { startFixtureServer } from "./start-fixture-server.mjs";
 
 const executeFile = promisify(execFile);
 async function accessibility(...args) {
@@ -47,21 +46,8 @@ async function poll(read, accept, description, timeout = 12_000) {
 const profile = await mkdtemp(
   path.join(tmpdir(), "listener-lens-native-chrome-"),
 );
-const server = createServer((request, response) => {
-  const name = path.basename(new URL(request.url, "http://localhost").pathname);
-  response.setHeader("Content-Type", "text/html; charset=utf-8");
-  createReadStream(path.resolve("tests/e2e/fixtures", name))
-    .on("error", () => {
-      response.statusCode = 404;
-      response.end();
-    })
-    .pipe(response);
-});
-await new Promise((resolve, reject) => {
-  server.once("error", reject);
-  server.listen(0, resolve);
-});
-const fixtureUrl = `http://localhost:${server.address().port}/site-access.html`;
+const { server, port } = await startFixtureServer();
+const fixtureUrl = `http://localhost:${port}/site-access.html`;
 const otherUrl = fixtureUrl.replace("localhost", "127.0.0.1");
 const pattern = "http://localhost/*";
 const otherPattern = "http://127.0.0.1/*";

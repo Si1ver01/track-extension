@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { createReadStream } from "node:fs";
-import { createServer } from "node:http";
 import path from "node:path";
 import {
   popupRevealProbe,
@@ -16,19 +14,9 @@ import {
   launchFirefoxExtension,
   poll,
 } from "./firefox-driver.mjs";
+import { startFixtureServer } from "./start-fixture-server.mjs";
 
-const server = createServer((request, response) => {
-  const name = path.basename(new URL(request.url, "http://localhost").pathname);
-  response.setHeader("Content-Type", "text/html; charset=utf-8");
-  createReadStream(path.resolve("tests/e2e/fixtures", name))
-    .on("error", () => {
-      response.statusCode = 404;
-      response.end();
-    })
-    .pipe(response);
-});
-await new Promise((resolve) => server.listen(0, resolve));
-const port = server.address().port;
+const { server, port } = await startFixtureServer();
 const fixtureUrl = `http://localhost:${port}/site-access.html`;
 const otherUrl = `http://127.0.0.1:${port}/site-access.html`;
 const pattern = "http://localhost/*";
