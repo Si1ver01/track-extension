@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type browser from "webextension-polyfill";
 import type { SiteAccessSnapshot } from "../../src/shared/contracts/site-access";
+import type { ListenerRecord } from "../../src/shared/contracts/records";
 import {
   popupRevealProbe,
   revealProbe,
@@ -685,10 +686,11 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
           if (!popup.lastSnapshotExport)
             throw new Error("Экспорт не создал Blob");
           return JSON.parse(await popup.lastSnapshotExport) as {
+            version: number;
             scope: string;
             totalCount: number;
             exportedCount: number;
-            records: { id: string }[];
+            records: ListenerRecord[];
             coverage: { partial: boolean };
           };
         } finally {
@@ -772,6 +774,134 @@ test("T-ACCESS-001 checks real collection, host isolation and revoke in Chromium
         ),
       reload: () => fixture.reload(),
       coverageText: popupText,
+      lifecyclePopup: async ({
+        beforeAbort,
+        abort,
+      }: {
+        beforeAbort: ListenerRecord;
+        abort: () => Promise<unknown>;
+      }) => {
+        await clickPopup("Обработчики");
+        await setFilter("Состояние обработчика", "unknown");
+        await setFilter("Источник регистрации", "add-event-listener");
+        await setFilter("Фрейм", "0");
+        await setSearch(`${beforeAbort.eventType} ${beforeAbort.source.path}`);
+        await expect
+          .poll(async () =>
+            (await readResults()).cards.some((card) =>
+              card.metadata.includes(beforeAbort.id),
+            ),
+          )
+          .toBe(true);
+        await control.evaluate((id) => {
+          const popup = (
+            window as unknown as ExtensionWindow
+          ).chrome.extension.getViews({ type: "popup" })[0]!;
+          const card = Array.from(
+            popup.document.querySelectorAll<HTMLDetailsElement>(
+              "details.listener-record",
+            ),
+          ).find((node) => node.textContent?.includes(id));
+          if (!card)
+            throw new Error("Once-запись отсутствует в настоящем popup");
+          card.open = true;
+        }, beforeAbort.id);
+        await expect.poll(popupText).toContain("Срабатывания не отслеживаются");
+        const exported = await exportPopup("Экспорт выборки");
+        expect(exported.version).toBe(1);
+        expect(
+          exported.records.find((record) => record.id === beforeAbort.id),
+        ).toMatchObject({
+          lifecycle: "unknown",
+          reasonCodes: expect.arrayContaining(["LIFECYCLE_UNVERIFIED"]),
+          listenerOptions: beforeAbort.listenerOptions,
+        });
+        expect(JSON.stringify(exported)).not.toMatch(/coverage-.*secret/);
+        const current = await snapshot();
+        await clickPopup(
+          current.baseline ? "Заменить снимок" : "Запомнить снимок",
+        );
+        await expect
+          .poll(
+            async () =>
+              (await snapshot()).baseline?.records.find(
+                (record) => record.id === beforeAbort.id,
+              )?.lifecycle,
+          )
+          .toBe("unknown");
+        await abort();
+        await setFilter("Состояние обработчика", "removed");
+        await expect
+          .poll(async () =>
+            (await readResults()).cards.some(
+              (card) =>
+                card.metadata.includes(beforeAbort.id) &&
+                card.summary.includes("Удалён (removed)"),
+            ),
+          )
+          .toBe(true);
+        const removedExport = await exportPopup("Экспорт выборки");
+        const removed = removedExport.records.find(
+          (record) => record.id === beforeAbort.id,
+        )!;
+        expect(removed.lifecycle).toBe("removed");
+        expect(removed.reasonCodes).not.toContain("LIFECYCLE_UNVERIFIED");
+        await clickPopup("Сравнение");
+        await expect.poll(popupText).toContain("unknown → removed");
+        expect(
+          (await snapshot()).baseline?.records.find(
+            (record) => record.id === beforeAbort.id,
+          )?.lifecycle,
+        ).toBe("unknown");
+        await clickPopup("Обработчики");
+        await setSearch("");
+        await setFilter("Состояние обработчика", "all");
+        await setFilter("Источник регистрации", "all");
+        await setFilter("Фрейм", "all");
+        await expect.poll(async () => (await readResults()).query).toBe("");
+        for (const width of [320, 400]) {
+          const layout = await control.evaluate(async (width) => {
+            const popup = (
+              window as unknown as ExtensionWindow
+            ).chrome.extension.getViews({ type: "popup" })[0]!;
+            const roots = [
+              popup.document.documentElement,
+              popup.document.body,
+              popup.document.getElementById("root")!,
+            ];
+            const original = roots.map((node) => node.style.width);
+            roots.forEach((node) => {
+              node.style.width = `${width}px`;
+            });
+            await new Promise<void>((resolve) =>
+              popup.requestAnimationFrame(() => resolve()),
+            );
+            const summary = popup.document.querySelector<HTMLElement>(
+              "details.listener-record summary",
+            )!;
+            summary.focus();
+            const fits =
+              roots.every((node) => node.scrollWidth <= width) &&
+              Array.from(
+                popup.document.querySelectorAll<HTMLElement>(
+                  "details.listener-record summary",
+                ),
+              ).every((node) => {
+                const badge = node
+                  .querySelector(".record-lifecycle")!
+                  .getBoundingClientRect();
+                const bounds = node.getBoundingClientRect();
+                return badge.right <= bounds.right && badge.left >= bounds.left;
+              });
+            const focused = popup.document.activeElement === summary;
+            roots.forEach((node, index) => {
+              node.style.width = original[index]!;
+            });
+            return { fits, focused };
+          }, width);
+          expect(layout).toEqual({ fits: true, focused: true });
+        }
+      },
       restartBackground: async () => {
         const cdp = await context.newCDPSession(control);
         const versions = new Map<

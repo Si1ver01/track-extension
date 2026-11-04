@@ -24,6 +24,37 @@ function record(overrides: Partial<ListenerRecord> = {}) {
 }
 
 describe("Сравнение снимков", () => {
+  it("сравнивает uncertain once, неоднозначные options и подтверждённое удаление", () => {
+    const original = record({
+      lifecycle: "unknown",
+      reasonCodes: ["LIFECYCLE_UNVERIFIED"],
+      listenerOptions: { capture: false, once: true, passive: true },
+    });
+    const baseline = copySnapshotRecords([original]);
+    original.listenerOptions = { capture: false, once: null, passive: null };
+    expect(compareSnapshots(baseline, [original]).changed[0]?.fields).toEqual([
+      { name: "passive", before: "true", after: "unknown" },
+      { name: "once", before: "true", after: "unknown" },
+    ]);
+    const removed = {
+      ...original,
+      lifecycle: "removed" as const,
+      reasonCodes: [],
+    };
+    const result = compareSnapshots(baseline, [removed]);
+    expect(result.added).toHaveLength(0);
+    expect(result.missing).toHaveLength(0);
+    expect(result.changed[0]?.fields).toContainEqual({
+      name: "lifecycle",
+      before: "unknown",
+      after: "removed",
+    });
+    expect(
+      result.changed[0]?.fields.some((field) => field.name === "reasonCodes"),
+    ).toBe(true);
+    expect(baseline[0]?.reasonCodes).toEqual(["LIFECYCLE_UNVERIFIED"]);
+    expect(baseline[0]?.listenerOptions?.once).toBe(true);
+  });
   it("разделяет added, missing, changed и unchanged по полной identity", () => {
     const first = record();
     const frame = record({ frameId: 2, documentId: "child" });

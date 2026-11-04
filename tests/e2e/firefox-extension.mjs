@@ -710,6 +710,100 @@ try {
     back: () => api("await browser.tabs.goBack(arguments[0]);", [fixture.id]),
     reload: () => api("await browser.tabs.reload(arguments[0]);", [fixture.id]),
     coverageText: async () => (await popupResults())?.text ?? "",
+    lifecyclePopup: async ({ beforeAbort, abort }) => {
+      await selectPopupTab("Обработчики");
+      await filterPopup("Состояние обработчика", "unknown");
+      await filterPopup("Источник регистрации", "add-event-listener");
+      await filterPopup("Фрейм", "0");
+      await searchPopup(`${beforeAbort.eventType} ${beforeAbort.source.path}`);
+      await poll(
+        popupResults,
+        (state) =>
+          state.records.some(
+            (record) =>
+              record.metadata["Идентификатор записи (id)"] === beforeAbort.id,
+          ),
+        "Firefox popup не показал once-запись",
+      );
+      await api(
+        `const popup = browser.extension.getViews({type: "popup"})[0];
+        const card = [...popup.document.querySelectorAll("details.listener-record")].find(node => node.textContent.includes(arguments[0]));
+        if (!card) throw new Error("Once-запись отсутствует в настоящем popup");
+        card.open = true;`,
+        [beforeAbort.id],
+      );
+      await poll(
+        popupResults,
+        (state) => state.text.includes("Срабатывания не отслеживаются"),
+        "Firefox popup не объясняет неизвестный lifecycle",
+      );
+      const exported = await exportPopup("Экспорт выборки");
+      assert.equal(exported.version, 1);
+      const once = exported.records.find(
+        (record) => record.id === beforeAbort.id,
+      );
+      assert.equal(once.lifecycle, "unknown");
+      assert.ok(once.reasonCodes.includes("LIFECYCLE_UNVERIFIED"));
+      assert.deepEqual(once.listenerOptions, beforeAbort.listenerOptions);
+      assert.doesNotMatch(JSON.stringify(exported), /coverage-.*secret/);
+      const current = await snapshot(fixture.id);
+      await api(
+        `const popup = browser.extension.getViews({type: "popup"})[0];
+        const button = [...popup.document.querySelectorAll("button")].find(node => node.textContent.trim() === arguments[0]);
+        if (!button) throw new Error("Кнопка baseline отсутствует");
+        button.click();`,
+        [current.baseline ? "Заменить снимок" : "Запомнить снимок"],
+      );
+      await poll(
+        () => snapshot(fixture.id),
+        (state) =>
+          state.baseline?.records.find((record) => record.id === beforeAbort.id)
+            ?.lifecycle === "unknown",
+        "Firefox не сохранил once baseline",
+      );
+      await abort();
+      await filterPopup("Состояние обработчика", "removed");
+      await poll(
+        popupResults,
+        (state) =>
+          state.records.some(
+            (record) =>
+              record.metadata["Идентификатор записи (id)"] === beforeAbort.id &&
+              record.metadata["Состояние (lifecycle)"] === "Удалён (removed)",
+          ),
+        "Firefox popup не показал abort tombstone",
+      );
+      const removedExport = await exportPopup("Экспорт выборки");
+      const removed = removedExport.records.find(
+        (record) => record.id === beforeAbort.id,
+      );
+      assert.equal(removed.lifecycle, "removed");
+      assert.ok(!removed.reasonCodes.includes("LIFECYCLE_UNVERIFIED"));
+      await selectPopupTab("Сравнение");
+      await poll(
+        popupResults,
+        (state) => state.text.includes("unknown → removed"),
+        "Firefox diff не показал подтверждённое удаление",
+      );
+      assert.equal(
+        (await snapshot(fixture.id)).baseline.records.find(
+          (record) => record.id === beforeAbort.id,
+        ).lifecycle,
+        "unknown",
+      );
+      await selectPopupTab("Обработчики");
+      await searchPopup("");
+      await filterPopup("Состояние обработчика", "all");
+      await filterPopup("Источник регистрации", "all");
+      await filterPopup("Фрейм", "all");
+      await poll(
+        popupResults,
+        (state) =>
+          state.search?.value === "" &&
+          state.filters.every((value) => value === "all"),
+        "Firefox не сбросил lifecycle-фильтры",
+      );
+    },
     restartBackground: async () => {
       await call("Marionette:SetContext", { value: "chrome" });
       const stopped = await executeAsync(`

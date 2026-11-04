@@ -33,6 +33,7 @@ export async function verifyDetectionCoverage({
   reload,
   coverageText,
   restartBackground,
+  lifecyclePopup,
 }) {
   await navigate("/detection-contexts.html");
   const initial = await waitFor(
@@ -72,6 +73,139 @@ export async function verifyDetectionCoverage({
       },
       `${label}: lifecycle ${lifecycle} не доставлен`,
     );
+
+  const lifecycleRecords = (state, name) =>
+    readSlot(state, "add-event-listener", `lifecycle-${name}`, "click");
+  const waitLifecycle = (name, predicate) =>
+    waitFor(
+      snapshot,
+      (state) => predicate(lifecycleRecords(state, name)),
+      `${label}: lifecycle ${name} не доставлен`,
+    );
+  const initialized = await run("lifecycle-init");
+  assert.equal(initialized.onceReads, 1);
+  const onceState = await waitLifecycle(
+    "once",
+    (records) => records.length === 1 && records[0].lifecycle === "unknown",
+  );
+  const once = lifecycleRecords(onceState, "once")[0];
+  assert.equal(once.listenerOptions.once, true);
+  assert.ok(once.reasonCodes.includes("LIFECYCLE_UNVERIFIED"));
+  assert.equal(lifecycleRecords(onceState, "ignored").length, 0);
+  assert.equal((await run("lifecycle-once-fire")).lifecycleCalls.once, 1);
+  const beforeReadd = await snapshot();
+  const repeated = await run("lifecycle-once-readd");
+  assert.equal(repeated.lifecycleCalls["once-before"], 1);
+  assert.equal(repeated.lifecycleCalls["once-after"], 3);
+  for (const name of ["once-before", "once-after"]) {
+    const state = await waitLifecycle(
+      name,
+      (records) =>
+        records.length === 1 && records[0].listenerOptions.once === null,
+    );
+    const record = lifecycleRecords(state, name)[0];
+    assert.equal(record.id, lifecycleRecords(beforeReadd, name)[0].id);
+    assert.equal(record.lifecycle, "unknown");
+    assert.equal(record.listenerOptions.passive, null);
+  }
+  const oldOnceAbort = await run("lifecycle-once-old-abort");
+  assert.equal(oldOnceAbort.lifecycleCalls["once-before"], 1);
+  assert.equal(
+    oldOnceAbort.lifecycleCalls["once-after"],
+    oldOnceAbort.nativeCalls["once-after"],
+  );
+  for (const name of ["once-before", "once-after"]) {
+    assert.equal(
+      lifecycleRecords(await snapshot(), name)[0].lifecycle,
+      "unknown",
+    );
+  }
+  const popupRecord = lifecycleRecords(
+    await waitLifecycle("once-abort", (records) => records.length === 1),
+    "once-abort",
+  )[0];
+  await lifecyclePopup({
+    beforeAbort: popupRecord,
+    abort: async () => {
+      await run("lifecycle-once-abort");
+      const state = await waitLifecycle(
+        "once-abort",
+        (records) => records.length === 1 && records[0].lifecycle === "removed",
+      );
+      const removed = lifecycleRecords(state, "once-abort")[0];
+      assert.equal(removed.id, popupRecord.id);
+      assert.ok(!removed.reasonCodes.includes("LIFECYCLE_UNVERIFIED"));
+      return removed;
+    },
+  });
+  const signalAbort = await run("lifecycle-signal-abort");
+  assert.equal(signalAbort.lifecycleCalls.signal, 0);
+  await waitLifecycle(
+    "signal",
+    (records) =>
+      records.length === 2 &&
+      records.every((record) => record.lifecycle === "removed"),
+  );
+  const duplicate = await run("lifecycle-duplicate");
+  assert.equal(duplicate.lifecycleCalls.duplicate, 2);
+  const duplicateRecord = lifecycleRecords(await snapshot(), "duplicate")[0];
+  assert.equal(duplicateRecord.lifecycle, "active");
+  assert.equal(duplicateRecord.listenerOptions.once, false);
+  assert.equal(duplicateRecord.listenerOptions.passive, true);
+  await run("lifecycle-duplicate-abort");
+  await waitLifecycle(
+    "duplicate",
+    (records) =>
+      records.length === 1 &&
+      records[0].lifecycle === "removed" &&
+      records[0].id === duplicateRecord.id,
+  );
+  const oldId = lifecycleRecords(await snapshot(), "old")[0].id;
+  const oldReadd = await run("lifecycle-old-readd");
+  assert.equal(oldReadd.lifecycleCalls.old, oldReadd.nativeCalls.old);
+  await waitLifecycle("old", (records) =>
+    records.some(
+      (record) => record.id !== oldId && record.lifecycle === "active",
+    ),
+  );
+  assert.equal((await run("lifecycle-synthetic")).lifecycleCalls.synthetic, 1);
+  assert.equal(
+    lifecycleRecords(await snapshot(), "synthetic")[0].lifecycle,
+    "active",
+  );
+  assert.equal((await run("lifecycle-blocked")).lifecycleCalls.blocked, 0);
+  // Уведомление скрыто страницей: active означает наблюдение регистрации.
+  assert.equal(
+    lifecycleRecords(await snapshot(), "blocked")[0].lifecycle,
+    "active",
+  );
+  const reentrantId = lifecycleRecords(await snapshot(), "reentrant")[0].id;
+  const reentrantNative = await run("lifecycle-reentrant");
+  assert.equal(
+    reentrantNative.lifecycleCalls.reentrant,
+    reentrantNative.nativeCalls.reentrant,
+  );
+  const reentrantState = await waitLifecycle("reentrant", (records) =>
+    records.some(
+      (record) => record.id !== reentrantId && record.lifecycle === "active",
+    ),
+  );
+  const reentrant = lifecycleRecords(reentrantState, "reentrant").find(
+    (record) => record.lifecycle === "active",
+  );
+  await run("lifecycle-reentrant-abort");
+  await waitLifecycle("reentrant", (records) =>
+    records.some(
+      (record) => record.id === reentrant.id && record.lifecycle === "removed",
+    ),
+  );
+  await run("lifecycle-remove");
+  for (const name of ["once-before", "once-after"]) {
+    await waitLifecycle(
+      name,
+      (records) => records.length === 1 && records[0].lifecycle === "removed",
+    );
+  }
 
   const native = await run("property-add");
   assert.equal(native.getterIdentity, true);
@@ -204,9 +338,21 @@ export async function verifyDetectionCoverage({
       .filter((record) =>
         beforeRestart.records.some((previous) => previous.id === record.id),
       )
-      .map((record) => [record.id, record.lifecycle])
+      .map((record) => [
+        record.id,
+        record.lifecycle,
+        record.reasonCodes,
+        record.listenerOptions,
+      ])
       .sort(),
-    beforeRestart.records.map((record) => [record.id, record.lifecycle]).sort(),
+    beforeRestart.records
+      .map((record) => [
+        record.id,
+        record.lifecycle,
+        record.reasonCodes,
+        record.listenerOptions,
+      ])
+      .sort(),
   );
   assert.equal(property(recovered)[0].lifecycle, "removed");
   await run("property-readd");
@@ -228,6 +374,15 @@ export async function verifyDetectionCoverage({
     `${label}: popup не объяснил переполнение`,
   );
 
+  await run("lifecycle-bfcache");
+  const beforeFreeze = await waitLifecycle(
+    "bfcache",
+    (records) => records.length === 1 && records[0].lifecycle === "unknown",
+  );
+  await waitLifecycle(
+    "bfcache-removed",
+    (records) => records.length === 1 && records[0].lifecycle === "removed",
+  );
   const confirmLimitedRestart = await restartBackground();
   await run("spa-after-back");
   await confirmLimitedRestart();
@@ -279,8 +434,37 @@ export async function verifyDetectionCoverage({
     `${label}: BFCache не восстановил сбор автоматически`,
   );
   assert.deepEqual(
-    restoredSnapshot.records.map((record) => record.id).sort(),
-    recoveredLimited.records.map((record) => record.id).sort(),
+    restoredSnapshot.records
+      .map((record) => [
+        record.id,
+        record.lifecycle,
+        record.reasonCodes,
+        record.listenerOptions,
+      ])
+      .sort(),
+    recoveredLimited.records
+      .map((record) => [
+        record.id,
+        record.lifecycle,
+        record.reasonCodes,
+        record.listenerOptions,
+      ])
+      .sort(),
+  );
+  const bfcacheRecord = lifecycleRecords(restoredSnapshot, "bfcache")[0];
+  assert.equal(
+    bfcacheRecord.id,
+    lifecycleRecords(beforeFreeze, "bfcache")[0].id,
+  );
+  assert.ok(bfcacheRecord.reasonCodes.includes("LIFECYCLE_UNVERIFIED"));
+  await run("lifecycle-bfcache-abort");
+  const afterBfcacheAbort = await waitLifecycle(
+    "bfcache",
+    (records) => records.length === 1 && records[0].lifecycle === "removed",
+  );
+  assert.equal(
+    lifecycleRecords(afterBfcacheAbort, "bfcache")[0].id,
+    bfcacheRecord.id,
   );
   assert.ok(
     restoredSnapshot.records.every(
@@ -348,6 +532,7 @@ export async function verifyRevokedBFCache({
     `${label}: сборщик перед revoke не готов`,
   );
   await run("property-add");
+  await run("lifecycle-init");
   const fixture = await run("state");
   await navigate("/navigation-target.html");
   await waitFor(
@@ -369,6 +554,7 @@ export async function verifyRevokedBFCache({
   );
   assert.equal(restored.token, fixture.token);
   await run("property-readd");
+  await run("lifecycle-signal-abort");
   const denied = await waitFor(
     snapshot,
     // После навигации Chromium отзывает activeTab и скрывает URL без host grant.

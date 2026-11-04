@@ -415,6 +415,36 @@ describe("панель результатов popup", () => {
     }
   });
 
+  it("объясняет неопределённость once и наблюдаемую регистрацию", () => {
+    const { container } = render(
+      <ResultsPanel
+        partial={false}
+        records={[
+          record({
+            id: "once",
+            lifecycle: "unknown",
+            reasonCodes: ["LIFECYCLE_UNVERIFIED"],
+          }),
+          record({ id: "ordinary" }),
+        ]}
+      />,
+    );
+    const details = container.querySelector("details")!;
+    expect(
+      within(details).getByText(
+        /текущее наличие и параметры обработчика могут быть неизвестны/,
+      ),
+    ).toBeTruthy();
+    expect(container.textContent).toContain("Регистрация наблюдалась (active)");
+    openFilters();
+    fireEvent.change(
+      screen.getByRole("combobox", { name: "Состояние обработчика" }),
+      { target: { value: "active" } },
+    );
+    expect(container.querySelectorAll("details")).toHaveLength(1);
+    expect(container.textContent).not.toContain("LIFECYCLE_UNVERIFIED");
+  });
+
   it("отображает недоверенные строки как текст без HTML и ссылок", () => {
     const hostile = '<img src="https://hostile.invalid/x" onerror="alert(1)">';
     const { container } = render(

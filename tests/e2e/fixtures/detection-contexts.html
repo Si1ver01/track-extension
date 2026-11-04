@@ -18,7 +18,53 @@
         firstCalls: 0,
         secondCalls: 0,
         correctThis: false,
+        lifecycleCalls: {},
+        nativeCalls: {},
+        onceReads: 0,
       };
+      const lifecycle = new Map();
+      function lifecycleTarget(
+        name,
+        options = {},
+        withSignal = true,
+        nativeControl = false,
+      ) {
+        const eventType = nativeControl ? "lifecycle-native-control" : "click";
+        const counters = nativeControl
+          ? state.nativeCalls
+          : state.lifecycleCalls;
+        const target = document.createElement(`lifecycle-${name}`);
+        document.body.append(target);
+        counters[name] = 0;
+        const callback = () => {
+          counters[name] += 1;
+        };
+        const first = new AbortController();
+        const second = new AbortController();
+        const item = { target, callback, first, second };
+        if (!nativeControl) lifecycle.set(name, item);
+        if (name === "blocked")
+          first.signal.addEventListener("abort", (event) =>
+            event.stopImmediatePropagation(),
+          );
+        if (name === "reentrant")
+          first.signal.addEventListener("abort", () =>
+            target.addEventListener(eventType, callback, {
+              signal: second.signal,
+            }),
+          );
+        target.addEventListener(
+          eventType,
+          callback,
+          withSignal ? { ...options, signal: first.signal } : options,
+        );
+        if (
+          !nativeControl &&
+          ["once-before", "once-after", "old", "reentrant"].includes(name)
+        )
+          item.control = lifecycleTarget(name, options, withSignal, true);
+        return item;
+      }
       function first() {
         void "coverage-callback-secret";
         state.firstCalls += 1;
@@ -40,6 +86,178 @@
       window.__coverageFixture = {
         run(operation) {
           switch (operation) {
+            case "lifecycle-init": {
+              const once = lifecycleTarget(
+                "once",
+                {
+                  get once() {
+                    state.onceReads += 1;
+                    return "truthy";
+                  },
+                },
+                false,
+              );
+              lifecycleTarget("once-before", { once: true, passive: true });
+              lifecycleTarget("once-after", { once: true, passive: true });
+              lifecycleTarget("once-abort", { once: true });
+              const signal = lifecycleTarget("signal");
+              signal.target.addEventListener("click", signal.callback, {
+                capture: true,
+                signal: signal.first.signal,
+              });
+              lifecycleTarget("duplicate", { passive: true, once: false });
+              lifecycleTarget("old");
+              lifecycleTarget("synthetic");
+              lifecycleTarget("blocked");
+              lifecycleTarget("reentrant");
+              const ignored = document.createElement("lifecycle-ignored");
+              const aborted = new AbortController();
+              aborted.abort();
+              ignored.addEventListener("click", null);
+              ignored.addEventListener("click", once.callback, {
+                signal: aborted.signal,
+              });
+              break;
+            }
+            case "lifecycle-once-fire":
+              for (let index = 0; index < 2; index++)
+                lifecycle.get("once").target.dispatchEvent(new Event("click"));
+              break;
+            case "lifecycle-once-readd":
+              for (const name of ["once-before", "once-after"]) {
+                const item = lifecycle.get(name);
+                const control = item.control;
+                if (name === "once-after")
+                  control.target.dispatchEvent(
+                    new Event("lifecycle-native-control"),
+                  );
+                control.target.addEventListener(
+                  "lifecycle-native-control",
+                  control.callback,
+                  {
+                    once: false,
+                    passive: false,
+                    signal: control.second.signal,
+                  },
+                );
+                control.target.dispatchEvent(
+                  new Event("lifecycle-native-control"),
+                );
+                control.target.dispatchEvent(
+                  new Event("lifecycle-native-control"),
+                );
+                if (name === "once-after")
+                  item.target.dispatchEvent(new Event("click"));
+                item.target.addEventListener("click", item.callback, {
+                  once: false,
+                  passive: false,
+                  signal: item.second.signal,
+                });
+                item.target.dispatchEvent(new Event("click"));
+                item.target.dispatchEvent(new Event("click"));
+              }
+              break;
+            case "lifecycle-once-old-abort":
+              for (const name of ["once-before", "once-after"]) {
+                const item = lifecycle.get(name);
+                item.control.first.abort();
+                item.control.target.dispatchEvent(
+                  new Event("lifecycle-native-control"),
+                );
+                item.control.target.dispatchEvent(
+                  new Event("lifecycle-native-control"),
+                );
+                item.first.abort();
+                item.target.dispatchEvent(new Event("click"));
+                item.target.dispatchEvent(new Event("click"));
+              }
+              break;
+            case "lifecycle-once-abort":
+              lifecycle.get("once-abort").first.abort();
+              break;
+            case "lifecycle-signal-abort":
+              lifecycle.get("signal").first.abort();
+              lifecycle.get("signal").target.dispatchEvent(new Event("click"));
+              break;
+            case "lifecycle-duplicate": {
+              const item = lifecycle.get("duplicate");
+              item.target.addEventListener("click", item.callback, {
+                once: true,
+                passive: false,
+                signal: item.second.signal,
+              });
+              item.second.abort();
+              item.target.dispatchEvent(new Event("click"));
+              item.target.dispatchEvent(new Event("click"));
+              break;
+            }
+            case "lifecycle-duplicate-abort":
+              lifecycle.get("duplicate").first.abort();
+              break;
+            case "lifecycle-old-readd": {
+              const item = lifecycle.get("old");
+              const control = item.control;
+              control.target.removeEventListener(
+                "lifecycle-native-control",
+                control.callback,
+              );
+              control.target.addEventListener(
+                "lifecycle-native-control",
+                control.callback,
+                { signal: control.second.signal },
+              );
+              control.first.abort();
+              control.target.dispatchEvent(
+                new Event("lifecycle-native-control"),
+              );
+              item.target.removeEventListener("click", item.callback);
+              item.target.addEventListener("click", item.callback, {
+                signal: item.second.signal,
+              });
+              item.first.abort();
+              item.target.dispatchEvent(new Event("click"));
+              break;
+            }
+            case "lifecycle-synthetic":
+              lifecycle
+                .get("synthetic")
+                .first.signal.dispatchEvent(new Event("abort"));
+              lifecycle
+                .get("synthetic")
+                .target.dispatchEvent(new Event("click"));
+              break;
+            case "lifecycle-blocked":
+              lifecycle.get("blocked").first.abort();
+              lifecycle.get("blocked").target.dispatchEvent(new Event("click"));
+              break;
+            case "lifecycle-reentrant":
+              lifecycle.get("reentrant").control.first.abort();
+              lifecycle
+                .get("reentrant")
+                .control.target.dispatchEvent(
+                  new Event("lifecycle-native-control"),
+                );
+              lifecycle.get("reentrant").first.abort();
+              lifecycle
+                .get("reentrant")
+                .target.dispatchEvent(new Event("click"));
+              break;
+            case "lifecycle-reentrant-abort":
+              lifecycle.get("reentrant").second.abort();
+              break;
+            case "lifecycle-remove":
+              for (const name of ["once-before", "once-after"]) {
+                const item = lifecycle.get(name);
+                item.target.removeEventListener("click", item.callback);
+              }
+              break;
+            case "lifecycle-bfcache":
+              lifecycleTarget("bfcache", { once: true });
+              lifecycleTarget("bfcache-removed").first.abort();
+              break;
+            case "lifecycle-bfcache-abort":
+              lifecycle.get("bfcache").first.abort();
+              break;
             case "property-add":
             case "property-repeat":
               button.onclick = first;

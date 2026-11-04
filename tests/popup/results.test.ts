@@ -30,6 +30,24 @@ function record(overrides: Partial<ListenerRecord> = {}): ListenerRecord {
 }
 
 describe("Точные фильтры результатов popup", () => {
+  it("сочетает unknown с поиском и сохраняет nullable options", () => {
+    const once = record({
+      lifecycle: "unknown",
+      reasonCodes: ["LIFECYCLE_UNVERIFIED"],
+      listenerOptions: { capture: false, once: null, passive: null },
+    });
+    const filters = {
+      ...DEFAULT_RESULT_FILTERS,
+      lifecycle: "unknown" as const,
+    };
+    expect(
+      projectResults([once, record()], "click button", filters).groups,
+    ).toEqual([{ eventType: "click", records: [once] }]);
+    expect(
+      projectResults([once], "click", { ...filters, lifecycle: "active" })
+        .matchedCount,
+    ).toBe(0);
+  });
   it.each(["active", "removed", "unknown"] as const)(
     "оставляет только lifecycle=%s",
     (lifecycle) => {

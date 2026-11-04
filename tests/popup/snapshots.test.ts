@@ -31,6 +31,29 @@ afterEach(() => {
 });
 
 describe("Экспорт снимков", () => {
+  it.each(["all", "filtered"] as const)(
+    "сохраняет lifecycle reason и nullable options в version 1: %s",
+    (scope) => {
+      const item = {
+        ...record(),
+        lifecycle: "unknown" as const,
+        reasonCodes: ["LIFECYCLE_UNVERIFIED" as const],
+        listenerOptions: { capture: false, once: null, passive: null },
+      };
+      const exported = createSnapshotExport({
+        records: [item],
+        totalCount: 2,
+        scope,
+        context: { partial: false },
+      });
+      expect(exported.version).toBe(1);
+      expect(exported.records[0]).toMatchObject({
+        ...item,
+        reasonCodes: expect.arrayContaining(["LIFECYCLE_UNVERIFIED"]),
+      });
+      expect(exported.coverage.reasons).not.toContain("LIFECYCLE_UNVERIFIED");
+    },
+  );
   it("повторно отбирает поля и исключает произвольные вложенные данные", () => {
     const item = record();
     Object.assign(item, {

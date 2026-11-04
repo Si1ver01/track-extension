@@ -56,7 +56,7 @@ function RecordDetails({
   onReveal?: RevealAction;
 }) {
   const lifecycle = {
-    active: "Активен (active)",
+    active: "Регистрация наблюдалась (active)",
     removed: "Удалён (removed)",
     unknown: "Неизвестно (unknown)",
   }[record.lifecycle];
@@ -126,6 +126,13 @@ function RecordDetails({
                 <li key={index}>{reason}</li>
               ))}
             </ul>
+            {record.reasonCodes.includes("LIFECYCLE_UNVERIFIED") && (
+              <p>
+                Регистрация наблюдалась, но текущее наличие и параметры
+                обработчика могут быть неизвестны. Срабатывания не
+                отслеживаются.
+              </p>
+            )}
           </MetadataRow>
         )}
         {record.limitations.length > 0 && (
@@ -277,7 +284,7 @@ export function ResultsPanel({
                 }
               >
                 <option value="all">Все состояния</option>
-                <option value="active">Активен (active)</option>
+                <option value="active">Регистрация наблюдалась (active)</option>
                 <option value="removed">Удалён (removed)</option>
                 <option value="unknown">Неизвестно (unknown)</option>
               </select>
