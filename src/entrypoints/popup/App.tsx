@@ -85,6 +85,9 @@ export function App() {
     snapshot?.site && status !== "no-access" && status !== "unsupported";
   const showRecords =
     (status === "ready" || status === "limited") && !pending && !issue;
+  const showGrantAction = status === "no-access" && Boolean(snapshot?.site);
+  const showReloadAction = status === "reload-required" || status === "limited";
+  const hasBottomAction = showGrantAction || showReloadAction;
 
   useEffect(() => {
     if (issue || status === "reload-required") statusRef.current?.focus();
@@ -301,36 +304,39 @@ export function App() {
             >
               <AlertDescription>{message}</AlertDescription>
             </Alert>
-            <div className="state-actions">
-              {status === "no-access" && snapshot?.site && (
-                <Button disabled={Boolean(pending)} onClick={grant}>
-                  <ShieldCheck />
-                  Разрешить для этого сайта
-                </Button>
-              )}
-              {(status === "reload-required" || status === "limited") && (
-                <Button disabled={Boolean(pending)} onClick={reload}>
-                  <RefreshCw />
-                  Перезагрузить вкладку
-                </Button>
-              )}
-              {(issue || status === "error") && (
+            {(issue || status === "error") && (
+              <div className="state-actions">
                 <Button disabled={Boolean(pending)} onClick={retry}>
                   <RefreshCw />
                   Повторить проверку
                 </Button>
-              )}
-            </div>
-            {snapshot?.site && status !== "unsupported" && (
-              <p className="scope state-scope">
-                Доступ действует для всех страниц и портов этого адреса.
-              </p>
+              </div>
             )}
           </section>
-          {hasAccess && (
-            <p className="state-footer">
-              Доступ к {snapshot?.site?.label} уже разрешён
-            </p>
+          {(hasBottomAction || hasAccess) && (
+            <footer className="state-footer">
+              <p>
+                {hasAccess
+                  ? `Доступ к ${snapshot?.site?.label} уже разрешён`
+                  : "Доступ действует для всех страниц и портов этого адреса."}
+              </p>
+              {hasBottomAction && (
+                <div className="state-actions">
+                  {showGrantAction && (
+                    <Button disabled={Boolean(pending)} onClick={grant}>
+                      <ShieldCheck />
+                      Разрешить для этого сайта
+                    </Button>
+                  )}
+                  {showReloadAction && (
+                    <Button disabled={Boolean(pending)} onClick={reload}>
+                      <RefreshCw />
+                      Перезагрузить вкладку
+                    </Button>
+                  )}
+                </div>
+              )}
+            </footer>
           )}
         </main>
       )}

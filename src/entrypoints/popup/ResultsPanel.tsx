@@ -383,13 +383,13 @@ export function ResultsPanel({
         />
       )}
       {results.totalCount === 0 ? (
-        <p>
+        <p className="results-empty">
           {partial
             ? "Пока нет данных об обработчиках."
             : "Обработчики событий не найдены."}
         </p>
       ) : results.matchedCount === 0 ? (
-        <p>
+        <p className="results-empty">
           {activeFilterCount > 0
             ? "По выбранным фильтрам ничего не найдено. Измените фильтры или сбросьте их."
             : "По запросу ничего не найдено."}
