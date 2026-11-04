@@ -4526,23 +4526,6 @@
                   "fontFamily": "$ll-font",
                   "fontSize": 13,
                   "fontWeight": "normal"
-                },
-                {
-                  "id": "L7oOT",
-                  "type": "ref",
-                  "ref": "PI1t0",
-                  "name": "Button / Разрешить для этого сайта",
-                  "width": "fill_container",
-                  "height": 36,
-                  "descendants": {
-                    "RL6ET": {
-                      "enabled": true,
-                      "icon": "shield-check"
-                    },
-                    "WXWVO": {
-                      "content": "Разрешить для этого сайта"
-                    }
-                  }
                 }
               ]
             }
@@ -4551,16 +4534,18 @@
         {
           "type": "frame",
           "id": "vTuUG",
-          "name": "Действия со снимком",
+          "name": "Основное действие и область доступа",
           "width": "fill_container",
-          "height": 60,
           "stroke": "$ll-border",
           "strokeWidth": {
             "top": 1
           },
-          "gap": 8,
+          "layout": "vertical",
+          "gap": 12,
           "padding": [
             12,
+            16,
+            16,
             16
           ],
           "alignItems": "center",
@@ -4574,9 +4559,27 @@
               "width": "fill_container",
               "content": "Доступ действует для всех страниц и портов этого адреса",
               "lineHeight": 1.4,
+              "textAlign": "center",
               "fontFamily": "$ll-font",
               "fontSize": 11,
               "fontWeight": "normal"
+            },
+            {
+              "id": "L7oOT",
+              "type": "ref",
+              "ref": "PI1t0",
+              "name": "Button / Разрешить для этого сайта",
+              "width": "fill_container",
+              "height": 36,
+              "descendants": {
+                "RL6ET": {
+                  "enabled": true,
+                  "icon": "shield-check"
+                },
+                "WXWVO": {
+                  "content": "Разрешить для этого сайта"
+                }
+              }
             }
           ]
         }
@@ -4725,23 +4728,6 @@
                   "fontFamily": "$ll-font",
                   "fontSize": 13,
                   "fontWeight": "normal"
-                },
-                {
-                  "id": "rN56p",
-                  "type": "ref",
-                  "ref": "PI1t0",
-                  "name": "Button / Перезагрузить вкладку",
-                  "width": "fill_container",
-                  "height": 36,
-                  "descendants": {
-                    "RL6ET": {
-                      "enabled": true,
-                      "icon": "rotate-cw"
-                    },
-                    "WXWVO": {
-                      "content": "Перезагрузить вкладку"
-                    }
-                  }
                 }
               ]
             }
@@ -4750,42 +4736,73 @@
         {
           "type": "frame",
           "id": "S3Upe",
-          "name": "Действия со снимком",
+          "name": "Основное действие и статус доступа",
           "width": "fill_container",
-          "height": 60,
           "stroke": "$ll-border",
           "strokeWidth": {
             "top": 1
           },
-          "gap": 8,
+          "layout": "vertical",
+          "gap": 12,
           "padding": [
             12,
+            16,
+            16,
             16
           ],
           "alignItems": "center",
           "children": [
             {
-              "type": "icon",
-              "id": "vRVGs",
-              "name": "Доступ выдан",
-              "width": 16,
-              "height": 16,
-              "icon": "shield-check",
-              "library": "lucide",
-              "fill": "$ll-success"
+              "type": "frame",
+              "id": "X3dmv",
+              "name": "Статус доступа",
+              "width": "fill_container",
+              "gap": 8,
+              "justifyContent": "center",
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "icon",
+                  "id": "vRVGs",
+                  "name": "Доступ выдан",
+                  "width": 16,
+                  "height": 16,
+                  "icon": "shield-check",
+                  "library": "lucide",
+                  "fill": "$ll-success"
+                },
+                {
+                  "type": "text",
+                  "id": "uKTCo",
+                  "name": "Состояние доступа",
+                  "fill": "$ll-secondary",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "Доступ к example.com уже разрешён",
+                  "lineHeight": 1.4,
+                  "textAlign": "center",
+                  "fontFamily": "$ll-font",
+                  "fontSize": 11,
+                  "fontWeight": "normal"
+                }
+              ]
             },
             {
-              "type": "text",
-              "id": "uKTCo",
-              "name": "Состояние доступа",
-              "fill": "$ll-secondary",
-              "textGrowth": "fixed-width",
+              "id": "rN56p",
+              "type": "ref",
+              "ref": "PI1t0",
+              "name": "Button / Перезагрузить вкладку",
               "width": "fill_container",
-              "content": "Доступ к example.com уже разрешён",
-              "lineHeight": 1.4,
-              "fontFamily": "$ll-font",
-              "fontSize": 11,
-              "fontWeight": "normal"
+              "height": 36,
+              "descendants": {
+                "RL6ET": {
+                  "enabled": true,
+                  "icon": "rotate-cw"
+                },
+                "WXWVO": {
+                  "content": "Перезагрузить вкладку"
+                }
+              }
             }
           ]
         }
@@ -5317,13 +5334,18 @@
             12,
             16
           ],
+          "justifyContent": "center",
+          "alignItems": "center",
           "children": [
             {
               "type": "frame",
               "id": "q2sgD",
+              "x": 16,
+              "y": 0,
               "name": "Свободное место",
-              "width": "fill_container",
-              "height": "fill_container",
+              "enabled": false,
+              "width": "fill_container(368)",
+              "height": "fill_container(92.5)",
               "layout": "vertical"
             },
             {
@@ -5331,12 +5353,14 @@
               "id": "eFfZ1",
               "name": "Пустое состояние",
               "width": "fill_container",
+              "height": "fill_container",
               "layout": "vertical",
               "gap": 16,
               "padding": [
                 0,
                 8
               ],
+              "justifyContent": "center",
               "alignItems": "center",
               "children": [
                 {
@@ -5372,6 +5396,7 @@
                   "width": "fill_container",
                   "content": "Совпадений нет",
                   "lineHeight": 1.4,
+                  "textAlign": "center",
                   "fontFamily": "$ll-font",
                   "fontSize": 18,
                   "fontWeight": "600"
@@ -5385,6 +5410,7 @@
                   "width": "fill_container",
                   "content": "Проверьте запрос или сбросьте условия фильтрации.",
                   "lineHeight": 1.4,
+                  "textAlign": "center",
                   "fontFamily": "$ll-font",
                   "fontSize": 13,
                   "fontWeight": "normal"
@@ -5411,9 +5437,12 @@
             {
               "type": "frame",
               "id": "wgOAP",
+              "x": 16,
+              "y": 291.5,
               "name": "Свободное место",
-              "width": "fill_container",
-              "height": "fill_container",
+              "enabled": false,
+              "width": "fill_container(368)",
+              "height": "fill_container(92.5)",
               "layout": "vertical"
             }
           ]
@@ -5546,13 +5575,18 @@
             12,
             16
           ],
+          "justifyContent": "center",
+          "alignItems": "center",
           "children": [
             {
               "type": "frame",
               "id": "H7y2j",
+              "x": 16,
+              "y": 0,
               "name": "Свободное место",
-              "width": "fill_container",
-              "height": "fill_container",
+              "enabled": false,
+              "width": "fill_container(368)",
+              "height": "fill_container(100.5)",
               "layout": "vertical"
             },
             {
@@ -5560,12 +5594,14 @@
               "id": "qFIhN",
               "name": "Пустое состояние",
               "width": "fill_container",
+              "height": "fill_container",
               "layout": "vertical",
               "gap": 16,
               "padding": [
                 0,
                 8
               ],
+              "justifyContent": "center",
               "alignItems": "center",
               "children": [
                 {
@@ -5601,6 +5637,7 @@
                   "width": "fill_container",
                   "content": "Обработчики не найдены",
                   "lineHeight": 1.4,
+                  "textAlign": "center",
                   "fontFamily": "$ll-font",
                   "fontSize": 18,
                   "fontWeight": "600"
@@ -5614,6 +5651,7 @@
                   "width": "fill_container",
                   "content": "На этой странице пока нет обнаруженных addEventListener-обработчиков. Часть регистраций может быть недоступна.",
                   "lineHeight": 1.4,
+                  "textAlign": "center",
                   "fontFamily": "$ll-font",
                   "fontSize": 13,
                   "fontWeight": "normal"
@@ -5623,9 +5661,12 @@
             {
               "type": "frame",
               "id": "F0vdc",
+              "x": 16,
+              "y": 283.5,
               "name": "Свободное место",
-              "width": "fill_container",
-              "height": "fill_container",
+              "enabled": false,
+              "width": "fill_container(368)",
+              "height": "fill_container(100.5)",
               "layout": "vertical"
             }
           ]
@@ -5758,13 +5799,18 @@
             12,
             16
           ],
+          "justifyContent": "center",
+          "alignItems": "center",
           "children": [
             {
               "type": "frame",
               "id": "AOja1",
+              "x": 16,
+              "y": 0,
               "name": "Свободное место",
-              "width": "fill_container",
-              "height": "fill_container",
+              "enabled": false,
+              "width": "fill_container(368)",
+              "height": "fill_container(66.5)",
               "layout": "vertical"
             },
             {
@@ -5772,12 +5818,14 @@
               "id": "bLFhC",
               "name": "Пустое состояние",
               "width": "fill_container",
+              "height": "fill_container",
               "layout": "vertical",
               "gap": 16,
               "padding": [
                 0,
                 8
               ],
+              "justifyContent": "center",
               "alignItems": "center",
               "children": [
                 {
@@ -5813,6 +5861,7 @@
                   "width": "fill_container",
                   "content": "Не удалось запустить сбор",
                   "lineHeight": 1.4,
+                  "textAlign": "center",
                   "fontFamily": "$ll-font",
                   "fontSize": 18,
                   "fontWeight": "600"
@@ -5826,6 +5875,7 @@
                   "width": "fill_container",
                   "content": "Повторите проверку или перезагрузите страницу.",
                   "lineHeight": 1.4,
+                  "textAlign": "center",
                   "fontFamily": "$ll-font",
                   "fontSize": 13,
                   "fontWeight": "normal"
@@ -5869,9 +5919,12 @@
             {
               "type": "frame",
               "id": "Wair1",
+              "x": 16,
+              "y": 317.5,
               "name": "Свободное место",
-              "width": "fill_container",
-              "height": "fill_container",
+              "enabled": false,
+              "width": "fill_container(368)",
+              "height": "fill_container(66.5)",
               "layout": "vertical"
             }
           ]
@@ -5902,6 +5955,7 @@
               "width": "fill_container",
               "content": "Не удалось получить ответ страницы",
               "lineHeight": 1.4,
+              "textAlign": "center",
               "fontFamily": "$ll-font",
               "fontSize": 11,
               "fontWeight": "normal"
@@ -5964,13 +6018,18 @@
             12,
             16
           ],
+          "justifyContent": "center",
+          "alignItems": "center",
           "children": [
             {
               "type": "frame",
               "id": "eHbXe",
+              "x": 16,
+              "y": 0,
               "name": "Свободное место",
-              "width": "fill_container",
-              "height": "fill_container",
+              "enabled": false,
+              "width": "fill_container(368)",
+              "height": "fill_container(133.5)",
               "layout": "vertical"
             },
             {
@@ -5978,12 +6037,14 @@
               "id": "EdjTe",
               "name": "Пустое состояние",
               "width": "fill_container",
+              "height": "fill_container",
               "layout": "vertical",
               "gap": 16,
               "padding": [
                 0,
                 8
               ],
+              "justifyContent": "center",
               "alignItems": "center",
               "children": [
                 {
@@ -6019,6 +6080,7 @@
                   "width": "fill_container",
                   "content": "Страница недоступна",
                   "lineHeight": 1.4,
+                  "textAlign": "center",
                   "fontFamily": "$ll-font",
                   "fontSize": 18,
                   "fontWeight": "600"
@@ -6032,6 +6094,7 @@
                   "width": "fill_container",
                   "content": "Откройте обычный сайт по HTTP или HTTPS, чтобы проверить обработчики.",
                   "lineHeight": 1.4,
+                  "textAlign": "center",
                   "fontFamily": "$ll-font",
                   "fontSize": 13,
                   "fontWeight": "normal"
@@ -6041,9 +6104,12 @@
             {
               "type": "frame",
               "id": "b5Yvc8",
+              "x": 16,
+              "y": 298.5,
               "name": "Свободное место",
-              "width": "fill_container",
-              "height": "fill_container",
+              "enabled": false,
+              "width": "fill_container(368)",
+              "height": "fill_container(133.5)",
               "layout": "vertical"
             }
           ]
@@ -6074,6 +6140,7 @@
               "width": "fill_container",
               "content": "Для этой страницы сбор недоступен",
               "lineHeight": 1.4,
+              "textAlign": "center",
               "fontFamily": "$ll-font",
               "fontSize": 11,
               "fontWeight": "normal"
